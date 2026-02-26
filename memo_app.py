@@ -603,7 +603,7 @@ class MemoApp:
         if result["message"]:
             try:
                 selected_snapshot.message = result["message"]
-                selected_snapshot.save()
+                selected_snapshot.save(self.repo.memit_dir)
                 self.refresh_history()
                 self.update_status()
                 self.status_label.config(text=f"✓ Snapshot #{selected_snapshot.id} 메시지 수정됨")
