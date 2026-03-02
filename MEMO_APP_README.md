@@ -2,63 +2,88 @@
 
 ## Overview
 
-A simple GUI application to test and visualize memit's auto-amend feature. This app lets you create and edit memos while tracking their version history.
+A modern GUI application built with CustomTkinter to test and visualize memit's auto-amend feature. This app lets you create and edit memos while tracking their version history with a sleek dark-themed interface.
 
 ## Running the App
 
+**Option 1: Using the convenience script (Recommended)**
 ```bash
-cd D:\side_repos\memit\memit
+./run_memo_app.sh
+```
+
+**Option 2: Manual activation**
+```bash
+source venv/bin/activate
 python memo_app.py
 ```
 
+**First-time setup:**
+The app uses a Python virtual environment with CustomTkinter. The `run_memo_app.sh` script will automatically create the virtual environment and install dependencies on first run.
+
 ## Features
 
-### 1. **Memo Editor** (Left Panel)
-- Write and edit your memos
+### 1. **Modern UI with CustomTkinter**
+- Sleek dark-themed interface
+- Smooth, professional appearance
+- Responsive layout with grid-based design
+- Custom buttons and input fields
+
+### 2. **Memo Editor** (Left Panel)
+- Large text editor with syntax highlighting
 - Changes are tracked but not saved until you commit
 - Use `Ctrl+S` as a keyboard shortcut for Save & Commit
+- 💾 Save button with custom commit message option
 
-### 2. **History List** (Right Panel, Top)
+### 3. **History List** (Right Panel, Top)
 - Shows all snapshots in reverse chronological order
-- Format: `#{id}: {message} (amended {count}x) - {timestamp}`
+- Format: `#{id}: {message} ({amend_count}) - {timestamp}`
+- **Automatic ordinal commit messages** (1, 2, 3, ...)
 - **Yellow background** = Amended snapshots (auto-merged commits)
+- **Green background** = Insert operations
+- **Red background** = Delete operations
+- **Blue background** = Mixed operations
 - Click on any snapshot to see the diff
+- Right-click to edit commit messages
 
-### 3. **Diff Preview** (Right Panel, Bottom)
+### 4. **Diff Preview** (Right Panel, Bottom)
 - Shows character-level differences between selected snapshot and current content
-- **Red text** = Deleted content
-- **Green text** = Added content
-- **Black text** = Unchanged content
+- **`[-text-]`** = Deleted content (red-highlighted)
+- **`[+text+]`** = Added content (green-highlighted)
+- Plain text = Unchanged content
+- Clear, readable diff format
 
-### 4. **Status Bar** (Top)
+### 5. **Status Bar** (Top)
 - Shows current snapshot information
 - Indicates if content has been modified (✏️) or is clean (✓)
 - Shows amend count for amended snapshots
+- Rounded corners with subtle background color
 
 ## How to Use
 
 ### Creating Your First Memo
 
 1. Type something in the editor (e.g., "Hello World")
-2. Enter a commit message (e.g., "initial memo")
-3. Click "Save & Commit"
-4. You'll see "Snapshot 1" created in the history
+2. Click "💾 Save (Ctrl+S)" button
+3. Commit message "1" is automatically generated
+4. You'll see "#1: 1" created in the history
+
+**Note:** Commit messages are now automatically numbered (1, 2, 3, ...) for simplicity. You can check the "커밋 메시지 직접 입력" checkbox if you want to write custom messages.
 
 ### Testing Auto-Amend
 
 Memit automatically amends commits when changes follow the "shortest edit path":
 
 **Example: Incremental Deletion**
-1. Start with: "Hello World" → Save (message: "initial") → **Snapshot 1**
-2. Change to: "Hello" → Save (message: "remove world") → **Snapshot 2**
-3. Change to: "Hel" → Save (message: "typo fix") → **Snapshot 2 amended!**
+1. Start with: "Hello World" → Save → **Snapshot #1: 1**
+2. Change to: "Hello" → Save → **Snapshot #2: 2**
+3. Change to: "Hel" → Save → **Snapshot #2: 2 (1)** ← Amended!
 
-The third change amends Snapshot 2 because removing "lo" is on the shortest path from "Hello World" to "Hel".
+The third change amends Snapshot 2 because removing "lo" is on the shortest path from "Hello World" to "Hel". The "(1)" indicates this snapshot has been amended once.
 
 **Example: Linear Addition**
-1. Start with: "A" → Save → **Snapshot 1**
-2. Change to: "AB" → Save → **Snapshot 2**
-3. Change to: "ABC" → Save → **Snapshot 2 amended!**
+1. Start with: "A" → Save → **Snapshot #1: 1**
+2. Change to: "AB" → Save → **Snapshot #2: 2**
+3. Change to: "ABC" → Save → **Snapshot #2: 2 (1)** ← Amended!
 
 Adding "C" after "AB" is on the shortest path from "A" to "ABC".
 
@@ -99,34 +124,73 @@ The changes were merged into snapshot 2 because they follow the optimal edit seq
 
 ## Tips
 
-- Use `Ctrl+S` to quickly save and commit
-- The status bar shows if you have unsaved changes
-- Yellow highlighting helps identify which snapshots have been auto-amended
-- The diff preview updates in real-time as you select different snapshots
+- **Keyboard shortcut:** Use `Ctrl+S` to quickly save and commit
+- **Status indicator:** The status bar shows if you have unsaved changes (✏️) or if it's clean (✓)
+- **Color coding:**
+  - Yellow = Amended snapshots
+  - Green = Insert operations
+  - Red = Delete operations
+  - Blue = Mixed operations
+- **Custom messages:** Check "커밋 메시지 직접 입력" to write your own commit messages
+- **Edit history:** Right-click on any snapshot to edit its commit message
+- **Diff preview:** Updates in real-time as you select different snapshots
+- **Dark mode:** The app uses a modern dark theme by default
 
 ## Example Workflow
 
 1. **Initial memo**: "Shopping list:\n- Milk"
-   - Save with message "start shopping list"
-   - **Snapshot 1 created**
+   - Click Save (Ctrl+S)
+   - **Snapshot #1: 1 created** (green background - insert)
 
 2. **Add item**: "Shopping list:\n- Milk\n- Bread"
-   - Save with message "add bread"
-   - **Snapshot 2 created**
+   - Click Save
+   - **Snapshot #2: 2 created** (green background - insert)
 
 3. **Add another**: "Shopping list:\n- Milk\n- Bread\n- Eggs"
-   - Save with message "add eggs"
-   - **Snapshot 2 amended** (linear addition on shortest path)
+   - Click Save
+   - **Snapshot #2: 2 (1) amended** (yellow background - linear addition on shortest path)
 
 4. **Remove all items**: "Shopping list:"
-   - Save with message "clear list"
-   - **Snapshot 3 created** (non-linear change, new snapshot needed)
+   - Click Save
+   - **Snapshot #3: 3 created** (red background - delete, non-linear change, new snapshot needed)
+
+## Technology Stack
+
+- **Python 3.13+** - Programming language
+- **CustomTkinter 5.2+** - Modern UI framework (built on tkinter)
+- **Memit** - Custom version control system with auto-amend
+- **Virtual Environment** - Isolated Python dependencies
 
 ## Troubleshooting
 
-- If the app doesn't start, make sure you're in the correct directory
-- The `memo_data` directory is created automatically
-- History persists between sessions
-- If you see an error, check that memit is properly installed
+### App won't start
+- Make sure you have Python 3.13+ installed
+- Run `./run_memo_app.sh` which handles virtual environment setup automatically
+- Check that `python3-tk` is installed: `sudo apt install python3-tk python3-venv`
 
-Enjoy testing memit's intelligent auto-amend feature!
+### Import errors
+- Activate the virtual environment: `source venv/bin/activate`
+- Install dependencies: `pip install customtkinter`
+
+### Display issues
+- The app requires a graphical display (X11/Wayland)
+- For headless environments, you'll need to set up a virtual display
+- Color schemes work best on dark-themed systems
+
+### General issues
+- The `memo_data` directory is created automatically on first run
+- History persists between sessions in `.memit/` directory
+- If you see memit-related errors, check that the memit package is properly installed
+
+## What's New
+
+**v2.0 - Modern UI Update**
+- 🎨 Upgraded to CustomTkinter for modern, sleek interface
+- 🌙 Dark mode theme by default
+- 📝 Simplified commit messages (automatic ordinal numbering: 1, 2, 3, ...)
+- 🎯 Cleaner amended display format: `(count)` instead of `(amended countx)`
+- 🎨 Color-coded history entries by operation type
+- ✨ Improved button styling and layout
+- 📱 Larger, more responsive window (1200x800)
+
+Enjoy testing memit's intelligent auto-amend feature with a beautiful modern interface!

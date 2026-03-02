@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Memit Memo App - Simple GUI for testing memit version control system.
+Memit Memo App - Modern GUI with CustomTkinter for testing memit version control system.
 
 This app demonstrates memit's auto-amend feature by providing a visual
 interface for creating and editing memos while tracking their history.
 """
 
+import customtkinter as ctk
 import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext
+from tkinter import messagebox
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Tuple
@@ -17,13 +18,18 @@ from memit.snapshot import Snapshot
 from memit.diff_engine import get_character_diff
 
 
+# Set appearance and theme
+ctk.set_appearance_mode("dark")  # "dark" or "light"
+ctk.set_default_color_theme("blue")  # "blue", "green", "dark-blue"
+
+
 class MemoApp:
     """Main application window for Memit Memo."""
 
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root: ctk.CTk):
         self.root = root
         self.root.title("Memit Memo - Simple Version Control")
-        self.root.geometry("1000x700")
+        self.root.geometry("1200x800")
 
         # Initialize memit repository
         self.work_dir = Path.cwd() / "memo_data"
@@ -52,21 +58,27 @@ class MemoApp:
 
     def setup_ui(self):
         """Create all UI widgets and layout."""
+        # Configure grid
+        self.root.grid_rowconfigure(1, weight=1)
+        self.root.grid_columnconfigure(0, weight=1)
+
         # Status bar at top
-        self.status_frame = ttk.Frame(self.root)
-        self.status_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
-
-        self.status_label = ttk.Label(
-            self.status_frame,
+        self.status_label = ctk.CTkLabel(
+            self.root,
             text="Status: No snapshots yet",
-            relief=tk.SUNKEN,
-            anchor=tk.W
+            anchor="w",
+            height=30,
+            fg_color=("gray85", "gray20"),
+            corner_radius=6
         )
-        self.status_label.pack(fill=tk.X)
+        self.status_label.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="ew")
 
-        # Main content area with PanedWindow
-        self.paned_window = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
-        self.paned_window.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        # Main content frame
+        self.main_frame = ctk.CTkFrame(self.root)
+        self.main_frame.grid(row=1, column=0, padx=10, pady=(5, 10), sticky="nsew")
+        self.main_frame.grid_rowconfigure(0, weight=1)
+        self.main_frame.grid_columnconfigure(0, weight=6)
+        self.main_frame.grid_columnconfigure(1, weight=4)
 
         # Left panel - Editor
         self.setup_editor_panel()
@@ -74,72 +86,96 @@ class MemoApp:
         # Right panel - History and Diff
         self.setup_history_panel()
 
-        # Add panels to PanedWindow
-        self.paned_window.add(self.editor_frame, weight=60)
-        self.paned_window.add(self.right_frame, weight=40)
-
     def setup_editor_panel(self):
         """Setup the left panel with memo editor."""
-        self.editor_frame = ttk.Frame(self.paned_window)
+        self.editor_frame = ctk.CTkFrame(self.main_frame)
+        self.editor_frame.grid(row=0, column=0, padx=(10, 5), pady=10, sticky="nsew")
+        self.editor_frame.grid_rowconfigure(1, weight=1)
+        self.editor_frame.grid_columnconfigure(0, weight=1)
 
         # Editor label
-        editor_label = ttk.Label(self.editor_frame, text="MEMO EDITOR", font=('Arial', 10, 'bold'))
-        editor_label.pack(pady=5)
+        editor_label = ctk.CTkLabel(
+            self.editor_frame,
+            text="MEMO EDITOR",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        editor_label.grid(row=0, column=0, pady=(10, 5))
 
         # Text editor
-        self.text_editor = scrolledtext.ScrolledText(
+        self.text_editor = ctk.CTkTextbox(
             self.editor_frame,
-            font=('Consolas', 11),
-            wrap=tk.WORD,
+            font=ctk.CTkFont(family="Consolas", size=12),
+            wrap="word",
             undo=True
         )
-        self.text_editor.pack(fill=tk.BOTH, expand=True, pady=5)
-        self.text_editor.bind('<<Modified>>', self.on_text_modified)
+        self.text_editor.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
+        self.text_editor.bind('<KeyRelease>', self.on_text_modified)
 
         # Bottom controls
-        controls_frame = ttk.Frame(self.editor_frame)
-        controls_frame.pack(fill=tk.X, pady=5)
+        controls_frame = ctk.CTkFrame(self.editor_frame, fg_color="transparent")
+        controls_frame.grid(row=2, column=0, pady=10, padx=10, sticky="ew")
 
         # Save button
-        self.save_button = ttk.Button(
+        self.save_button = ctk.CTkButton(
             controls_frame,
-            text="Save (Ctrl+S)",
-            command=self.save_and_commit
+            text="💾 Save (Ctrl+S)",
+            command=self.save_and_commit,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            height=35
         )
-        self.save_button.pack(side=tk.LEFT, padx=5)
+        self.save_button.pack(side="left", padx=5)
 
         # Checkbox for custom commit message
-        self.use_custom_msg = tk.BooleanVar(value=False)
-        self.custom_msg_check = ttk.Checkbutton(
+        self.use_custom_msg = ctk.BooleanVar(value=False)
+        self.custom_msg_check = ctk.CTkCheckBox(
             controls_frame,
             text="커밋 메시지 직접 입력",
-            variable=self.use_custom_msg
+            variable=self.use_custom_msg,
+            font=ctk.CTkFont(size=12)
         )
-        self.custom_msg_check.pack(side=tk.LEFT, padx=(15, 5))
+        self.custom_msg_check.pack(side="left", padx=15)
 
     def setup_history_panel(self):
         """Setup the right panel with history and diff preview."""
-        self.right_frame = ttk.Frame(self.paned_window)
+        self.right_frame = ctk.CTkFrame(self.main_frame)
+        self.right_frame.grid(row=0, column=1, padx=(5, 10), pady=10, sticky="nsew")
+        self.right_frame.grid_rowconfigure(1, weight=4)
+        self.right_frame.grid_rowconfigure(3, weight=6)
+        self.right_frame.grid_columnconfigure(0, weight=1)
 
         # Upper part - History
-        history_label = ttk.Label(self.right_frame, text="HISTORY", font=('Arial', 10, 'bold'))
-        history_label.pack(pady=5)
-
-        # History listbox with scrollbar
-        history_frame = ttk.Frame(self.right_frame)
-        history_frame.pack(fill=tk.BOTH, expand=True, pady=5)
-
-        scrollbar = ttk.Scrollbar(history_frame)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-        self.history_listbox = tk.Listbox(
-            history_frame,
-            font=('Consolas', 9),
-            yscrollcommand=scrollbar.set,
-            selectmode=tk.SINGLE
+        history_label = ctk.CTkLabel(
+            self.right_frame,
+            text="HISTORY",
+            font=ctk.CTkFont(size=14, weight="bold")
         )
-        self.history_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.config(command=self.history_listbox.yview)
+        history_label.grid(row=0, column=0, pady=(10, 5))
+
+        # History listbox frame (using traditional Listbox with CTk frame)
+        history_list_frame = ctk.CTkFrame(self.right_frame)
+        history_list_frame.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
+        history_list_frame.grid_rowconfigure(0, weight=1)
+        history_list_frame.grid_columnconfigure(0, weight=1)
+
+        # Scrollbar
+        scrollbar = ctk.CTkScrollbar(history_list_frame)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
+        # Using traditional Listbox (CustomTkinter doesn't have a good Listbox replacement)
+        self.history_listbox = tk.Listbox(
+            history_list_frame,
+            font=('Consolas', 10),
+            yscrollcommand=scrollbar.set,
+            selectmode=tk.SINGLE,
+            bg="#2b2b2b",
+            fg="#ffffff",
+            selectbackground="#1f538d",
+            selectforeground="#ffffff",
+            bd=0,
+            highlightthickness=0
+        )
+        self.history_listbox.grid(row=0, column=0, sticky="nsew")
+        scrollbar.configure(command=self.history_listbox.yview)
 
         self.history_listbox.bind('<<ListboxSelect>>', self.on_history_select)
 
@@ -149,44 +185,42 @@ class MemoApp:
         self.history_listbox.bind('<Button-3>', self.show_history_context_menu)
 
         # Separator
-        ttk.Separator(self.right_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=5)
+        separator = ctk.CTkFrame(self.right_frame, height=2, fg_color=("gray70", "gray30"))
+        separator.grid(row=2, column=0, padx=10, pady=10, sticky="ew")
 
         # Lower part - Diff Preview
-        diff_label = ttk.Label(self.right_frame, text="DIFF PREVIEW", font=('Arial', 10, 'bold'))
-        diff_label.pack(pady=5)
+        diff_label = ctk.CTkLabel(
+            self.right_frame,
+            text="DIFF PREVIEW",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        diff_label.grid(row=3, column=0, pady=(5, 5), sticky="n")
 
         # Diff text area
-        self.diff_text = scrolledtext.ScrolledText(
+        self.diff_text = ctk.CTkTextbox(
             self.right_frame,
-            font=('Consolas', 9),
-            wrap=tk.WORD,
-            height=15,
-            state=tk.DISABLED
+            font=ctk.CTkFont(family="Consolas", size=10),
+            wrap="word"
         )
-        self.diff_text.pack(fill=tk.BOTH, expand=True, pady=5)
-
-        # Configure color tags for diff
-        self.diff_text.tag_config('delete', foreground='red', background='#ffe0e0')
-        self.diff_text.tag_config('insert', foreground='green', background='#e0ffe0')
-        self.diff_text.tag_config('equal', foreground='black')
+        self.diff_text.grid(row=3, column=0, padx=10, pady=(30, 5), sticky="nsew")
 
         # Restore button
-        self.restore_button = ttk.Button(
+        self.restore_button = ctk.CTkButton(
             self.right_frame,
-            text="Restore Selected Version",
+            text="↻ Restore Selected Version",
             command=self.restore_version,
-            state=tk.DISABLED
+            state="disabled",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            height=32
         )
-        self.restore_button.pack(pady=5)
+        self.restore_button.grid(row=4, column=0, pady=10, padx=10)
 
     def on_text_modified(self, event=None):
         """Handle text modification event."""
-        if self.text_editor.edit_modified():
-            current_content = self.text_editor.get('1.0', 'end-1c')
-            if current_content != self.last_saved_content:
-                self.modified = True
-                self.update_status()
-            self.text_editor.edit_modified(False)
+        current_content = self.text_editor.get('1.0', 'end-1c')
+        if current_content != self.last_saved_content:
+            self.modified = True
+            self.update_status()
 
     def load_content(self):
         """Load memo content from file."""
@@ -199,7 +233,6 @@ class MemoApp:
             self.last_saved_content = ""
 
         self.modified = False
-        self.text_editor.edit_modified(False)
 
     def save_and_commit(self):
         """Save memo.txt and commit to repository."""
@@ -214,9 +247,9 @@ class MemoApp:
             if message is None:  # User cancelled
                 return
         else:
-            # Generate automatic commit message with timestamp
-            now = datetime.now()
-            message = now.strftime("Update at %H:%M:%S")
+            # Generate automatic commit message with ordinal number
+            snapshot_count = len(self.repo.get_snapshots())
+            message = str(snapshot_count + 1)
 
         # Save to file
         try:
@@ -234,9 +267,9 @@ class MemoApp:
             if success:
                 # Update status bar to show result
                 if "Amended" in msg:
-                    self.status_label.config(text=f"✓ {msg} (shortest edit path)")
+                    self.status_label.configure(text=f"✓ {msg} (shortest edit path)")
                 else:
-                    self.status_label.config(text=f"✓ {msg}")
+                    self.status_label.configure(text=f"✓ {msg}")
 
                 # Refresh UI
                 self.refresh_history()
@@ -249,9 +282,9 @@ class MemoApp:
 
     def show_commit_message_dialog(self) -> Optional[str]:
         """Show modal dialog for commit message input."""
-        dialog = tk.Toplevel(self.root)
+        dialog = ctk.CTkToplevel(self.root)
         dialog.title("커밋 메시지 입력")
-        dialog.geometry("400x120")
+        dialog.geometry("450x150")
         dialog.transient(self.root)
         dialog.grab_set()
 
@@ -264,17 +297,22 @@ class MemoApp:
         result = {"message": None}
 
         # Label
-        ttk.Label(dialog, text="커밋 메시지를 입력하세요:").pack(pady=10, padx=10)
+        ctk.CTkLabel(
+            dialog,
+            text="커밋 메시지를 입력하세요:",
+            font=ctk.CTkFont(size=13)
+        ).pack(pady=(15, 10), padx=15)
 
         # Entry
-        entry = ttk.Entry(dialog, font=('Consolas', 11))
-        entry.pack(fill=tk.X, padx=10, pady=5)
+        entry = ctk.CTkEntry(dialog, font=ctk.CTkFont(family="Consolas", size=12), height=35)
+        entry.pack(fill="x", padx=15, pady=10)
         entry.focus()
 
         def on_ok():
             result["message"] = entry.get().strip()
             if not result["message"]:
-                result["message"] = datetime.now().strftime("Update at %H:%M:%S")
+                snapshot_count = len(self.repo.get_snapshots())
+                result["message"] = str(snapshot_count + 1)
             dialog.destroy()
 
         def on_cancel():
@@ -282,11 +320,24 @@ class MemoApp:
             dialog.destroy()
 
         # Buttons
-        button_frame = ttk.Frame(dialog)
+        button_frame = ctk.CTkFrame(dialog, fg_color="transparent")
         button_frame.pack(pady=10)
 
-        ttk.Button(button_frame, text="확인", command=on_ok).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="취소", command=on_cancel).pack(side=tk.LEFT, padx=5)
+        ctk.CTkButton(
+            button_frame,
+            text="확인",
+            command=on_ok,
+            width=100
+        ).pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            button_frame,
+            text="취소",
+            command=on_cancel,
+            width=100,
+            fg_color="gray50",
+            hover_color="gray40"
+        ).pack(side="left", padx=5)
 
         # Bind Enter key
         entry.bind('<Return>', lambda e: on_ok())
@@ -324,7 +375,7 @@ class MemoApp:
                 entry = f"#{snap.id}: {snap.message}"
 
                 if snap.amended and snap.amend_count > 0:
-                    entry += f" (amended {snap.amend_count}x)"
+                    entry += f" ({snap.amend_count})"
 
                 entry += f" - {time_str}"
 
@@ -336,19 +387,19 @@ class MemoApp:
 
                 if snap.amended and snap.amend_count > 0:
                     # Amended snapshots: yellow
-                    bg_color = '#ffffcc'
+                    bg_color = '#ffd966'
                 else:
                     # Analyze change type
                     change_type = self.analyze_change_type(snap, i, snapshots)
                     if change_type == 'insert':
-                        bg_color = '#e0ffe0'  # Light green
+                        bg_color = '#90ee90'  # Light green
                     elif change_type == 'delete':
-                        bg_color = '#ffe0e0'  # Light red
+                        bg_color = '#ff9999'  # Light red
                     elif change_type == 'mixed':
-                        bg_color = '#e0e0ff'  # Light blue
+                        bg_color = '#b0c4de'  # Light blue
 
                 if bg_color:
-                    self.history_listbox.itemconfig(idx, bg=bg_color)
+                    self.history_listbox.itemconfig(idx, bg=bg_color, fg='#000000')
 
         except Exception as e:
             self.history_listbox.insert(tk.END, f"Error loading history: {e}")
@@ -400,7 +451,7 @@ class MemoApp:
         selection = self.history_listbox.curselection()
 
         if not selection:
-            self.restore_button.config(state=tk.DISABLED)
+            self.restore_button.configure(state="disabled")
             return
 
         idx = selection[0]
@@ -412,7 +463,7 @@ class MemoApp:
         selected_snapshot = self.snapshots[idx]
 
         # Enable restore button
-        self.restore_button.config(state=tk.NORMAL)
+        self.restore_button.configure(state="normal")
 
         # Get content from selected snapshot
         old_content = selected_snapshot.files.get('memo.txt', '')
@@ -426,31 +477,29 @@ class MemoApp:
     def show_diff(self, old_content: str, new_content: str):
         """Display colored diff in preview pane."""
         # Clear diff text
-        self.diff_text.config(state=tk.NORMAL)
         self.diff_text.delete('1.0', tk.END)
 
         if old_content == new_content:
             self.diff_text.insert('1.0', "[No differences - content is identical]")
-            self.diff_text.config(state=tk.DISABLED)
             return
 
         # Get character-level diff
         try:
             diff_ops = get_character_diff(old_content, new_content)
 
-            # Insert diff with colors
+            # Insert diff with colors (using tags for CTkTextbox)
             for op, text in diff_ops:
                 if op == 'equal':
-                    self.diff_text.insert(tk.END, text, 'equal')
+                    self.diff_text.insert(tk.END, text)
                 elif op == 'delete':
-                    self.diff_text.insert(tk.END, text, 'delete')
+                    # Show deleted text in red with strikethrough
+                    self.diff_text.insert(tk.END, f"[-{text}-]")
                 elif op == 'insert':
-                    self.diff_text.insert(tk.END, text, 'insert')
+                    # Show inserted text in green
+                    self.diff_text.insert(tk.END, f"[+{text}+]")
 
         except Exception as e:
             self.diff_text.insert('1.0', f"Error generating diff: {e}")
-
-        self.diff_text.config(state=tk.DISABLED)
 
     def restore_version(self):
         """Restore selected snapshot to editor."""
@@ -506,7 +555,7 @@ class MemoApp:
                 status = f"Snapshot #{last_snapshot.id}: {last_snapshot.message}"
 
                 if last_snapshot.amended and last_snapshot.amend_count > 0:
-                    status += f" (amended {last_snapshot.amend_count}x)"
+                    status += f" ({last_snapshot.amend_count})"
 
                 if self.modified:
                     status += " | Modified ✏️"
@@ -517,10 +566,10 @@ class MemoApp:
                 if self.modified:
                     status += " | Modified ✏️"
 
-            self.status_label.config(text=f"Status: {status}")
+            self.status_label.configure(text=f"Status: {status}")
 
         except Exception as e:
-            self.status_label.config(text=f"Status: Error - {e}")
+            self.status_label.configure(text=f"Status: Error - {e}")
 
     def show_history_context_menu(self, event):
         """Show context menu on right-click."""
@@ -552,9 +601,9 @@ class MemoApp:
         selected_snapshot = self.snapshots[idx]
 
         # Show dialog to edit message
-        dialog = tk.Toplevel(self.root)
+        dialog = ctk.CTkToplevel(self.root)
         dialog.title("커밋 메시지 수정")
-        dialog.geometry("400x120")
+        dialog.geometry("450x150")
         dialog.transient(self.root)
         dialog.grab_set()
 
@@ -567,11 +616,15 @@ class MemoApp:
         result = {"message": None}
 
         # Label
-        ttk.Label(dialog, text=f"Snapshot #{selected_snapshot.id}의 메시지를 수정:").pack(pady=10, padx=10)
+        ctk.CTkLabel(
+            dialog,
+            text=f"Snapshot #{selected_snapshot.id}의 메시지를 수정:",
+            font=ctk.CTkFont(size=13)
+        ).pack(pady=(15, 10), padx=15)
 
         # Entry with current message
-        entry = ttk.Entry(dialog, font=('Consolas', 11))
-        entry.pack(fill=tk.X, padx=10, pady=5)
+        entry = ctk.CTkEntry(dialog, font=ctk.CTkFont(family="Consolas", size=12), height=35)
+        entry.pack(fill="x", padx=15, pady=10)
         entry.insert(0, selected_snapshot.message)
         entry.select_range(0, tk.END)
         entry.focus()
@@ -587,11 +640,24 @@ class MemoApp:
             dialog.destroy()
 
         # Buttons
-        button_frame = ttk.Frame(dialog)
+        button_frame = ctk.CTkFrame(dialog, fg_color="transparent")
         button_frame.pack(pady=10)
 
-        ttk.Button(button_frame, text="확인", command=on_ok).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="취소", command=on_cancel).pack(side=tk.LEFT, padx=5)
+        ctk.CTkButton(
+            button_frame,
+            text="확인",
+            command=on_ok,
+            width=100
+        ).pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            button_frame,
+            text="취소",
+            command=on_cancel,
+            width=100,
+            fg_color="gray50",
+            hover_color="gray40"
+        ).pack(side="left", padx=5)
 
         # Bind keys
         entry.bind('<Return>', lambda e: on_ok())
@@ -606,14 +672,14 @@ class MemoApp:
                 selected_snapshot.save(self.repo.memit_dir)
                 self.refresh_history()
                 self.update_status()
-                self.status_label.config(text=f"✓ Snapshot #{selected_snapshot.id} 메시지 수정됨")
+                self.status_label.configure(text=f"✓ Snapshot #{selected_snapshot.id} 메시지 수정됨")
             except Exception as e:
                 messagebox.showerror("Error", f"메시지 수정 실패: {e}")
 
 
 def main():
     """Main entry point for the application."""
-    root = tk.Tk()
+    root = ctk.CTk()
     app = MemoApp(root)
     root.mainloop()
 
