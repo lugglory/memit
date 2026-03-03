@@ -11,7 +11,7 @@ import tkinter as tk
 from tkinter import messagebox
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, List, Tuple
+from typing import Optional, List
 
 from memit.repository import Repository
 from memit.snapshot import Snapshot
@@ -64,6 +64,9 @@ class MemoApp:
         # Setup keyboard shortcuts
         self.root.bind('<Control-s>', lambda e: self.save_and_commit())
 
+        # Auto-pull on startup (silently ignore failures)
+        self.root.after(500, self._auto_pull)
+
     def setup_ui(self):
         """Create all UI widgets and layout."""
         # Configure grid
@@ -80,6 +83,8 @@ class MemoApp:
             corner_radius=6
         )
         self.status_label.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="ew")
+        # Right-click on status bar → remote settings
+        self.status_label.bind('<Button-3>', lambda e: self.show_remote_settings())
 
         # Main content frame
         self.main_frame = ctk.CTkFrame(self.root)
@@ -133,6 +138,18 @@ class MemoApp:
         )
         self.save_button.pack(side="left", padx=5)
 
+        # Push button
+        self.push_button = ctk.CTkButton(
+            controls_frame,
+            text="☁ Push",
+            command=self.push_to_remote,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            height=35,
+            fg_color=("gray60", "gray30"),
+            hover_color=("gray50", "gray40")
+        )
+        self.push_button.pack(side="left", padx=5)
+
         # Checkbox for custom commit message
         self.use_custom_msg = ctk.BooleanVar(value=False)
         self.custom_msg_check = ctk.CTkCheckBox(
@@ -159,17 +176,15 @@ class MemoApp:
         )
         history_label.grid(row=0, column=0, pady=(10, 5))
 
-        # History listbox frame (using traditional Listbox with CTk frame)
+        # History listbox frame
         history_list_frame = ctk.CTkFrame(self.right_frame)
         history_list_frame.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
         history_list_frame.grid_rowconfigure(0, weight=1)
         history_list_frame.grid_columnconfigure(0, weight=1)
 
-        # Scrollbar
         scrollbar = ctk.CTkScrollbar(history_list_frame)
         scrollbar.grid(row=0, column=1, sticky="ns")
 
-        # Using traditional Listbox (CustomTkinter doesn't have a good Listbox replacement)
         self.history_listbox = tk.Listbox(
             history_list_frame,
             font=('Consolas', 10),
@@ -204,7 +219,6 @@ class MemoApp:
         )
         diff_label.grid(row=3, column=0, pady=(5, 5), sticky="n")
 
-        # Diff text area (tk.Text for tag-based coloring)
         diff_frame = ctk.CTkFrame(self.right_frame)
         diff_frame.grid(row=3, column=0, padx=10, pady=(30, 5), sticky="nsew")
         diff_frame.grid_rowconfigure(0, weight=1)
@@ -280,15 +294,18 @@ class MemoApp:
 
     def save_and_commit(self):
         """Save memo.txt and commit to repository."""
-        # Get content
         content = self.text_editor.get('1.0', 'end-1c')
 
-        # Determine commit message
-        custom_message = None
+        # Determine commit message before saving
         if self.use_custom_msg.get():
-            custom_message = self.show_commit_message_dialog()
-            if custom_message is None:  # User cancelled
+            message = self.show_commit_message_dialog()
+            if message is None:  # User cancelled
                 return
+        else:
+            # Pre-compute auto-message from diff of current HEAD vs new content
+            last_snap = self.repo.get_last_snapshot()
+            parent_content = last_snap.files.get('memo.txt', '') if last_snap else ''
+            message = self._auto_message(parent_content, content)
 
         # Save to file
         try:
@@ -299,30 +316,16 @@ class MemoApp:
             messagebox.showerror("Save Error", f"Failed to save file: {e}")
             return
 
-        # Commit to repository (use placeholder for auto-message)
+        # Commit to repository
         try:
-            success, msg = self.repo.commit(custom_message or '_auto')
+            success, msg = self.repo.commit(message)
 
             if success:
-                # If auto-message, compute from parent diff and update
-                if not custom_message:
-                    last_snap = self.repo.get_last_snapshot()
-                    if last_snap.parent is not None:
-                        from memit.snapshot import Snapshot as _Snapshot
-                        parent_snap = _Snapshot.load(self.repo.memit_dir, last_snap.parent)
-                        parent_content = parent_snap.files.get('memo.txt', '')
-                    else:
-                        parent_content = ''
-                    last_snap.message = self._auto_message(parent_content, content)
-                    last_snap.save(self.repo.memit_dir)
-
-                # Update status bar
                 if "Amended" in msg:
                     self.status_label.configure(text=f"✓ {msg} (shortest edit path)")
                 else:
                     self.status_label.configure(text=f"✓ {msg}")
 
-                # Refresh UI
                 self.refresh_history()
                 self.update_status()
             else:
@@ -339,7 +342,6 @@ class MemoApp:
         dialog.transient(self.root)
         dialog.grab_set()
 
-        # Center the dialog
         dialog.update_idletasks()
         x = self.root.winfo_x() + (self.root.winfo_width() - dialog.winfo_width()) // 2
         y = self.root.winfo_y() + (self.root.winfo_height() - dialog.winfo_height()) // 2
@@ -347,14 +349,12 @@ class MemoApp:
 
         result = {"message": None}
 
-        # Label
         ctk.CTkLabel(
             dialog,
             text="커밋 메시지를 입력하세요:",
             font=ctk.CTkFont(size=13)
         ).pack(pady=(15, 10), padx=15)
 
-        # Entry
         entry = ctk.CTkEntry(dialog, font=ctk.CTkFont(family="Consolas", size=12), height=35)
         entry.pack(fill="x", padx=15, pady=10)
         entry.focus()
@@ -370,7 +370,6 @@ class MemoApp:
             result["message"] = None
             dialog.destroy()
 
-        # Buttons
         button_frame = ctk.CTkFrame(dialog, fg_color="transparent")
         button_frame.pack(pady=10)
 
@@ -390,7 +389,6 @@ class MemoApp:
             hover_color="gray40"
         ).pack(side="left", padx=5)
 
-        # Bind Enter key
         entry.bind('<Return>', lambda e: on_ok())
         entry.bind('<Escape>', lambda e: on_cancel())
 
@@ -399,10 +397,8 @@ class MemoApp:
 
     def refresh_history(self):
         """Update history listbox with snapshots."""
-        # Clear listbox
         self.history_listbox.delete(0, tk.END)
 
-        # Get snapshots
         try:
             snapshots = self.repo.get_snapshots(limit=50)
 
@@ -410,32 +406,28 @@ class MemoApp:
                 self.history_listbox.insert(tk.END, "No snapshots yet")
                 return
 
-            # Store snapshots for later reference
             self.snapshots = snapshots
 
-            # Populate listbox (newest first)
             for i, snap in enumerate(snapshots):
-                # Format timestamp
                 try:
                     dt = datetime.fromisoformat(snap.timestamp)
                     time_str = dt.strftime("%Y-%m-%d %H:%M:%S")
-                except:
+                except Exception:
                     time_str = snap.timestamp
 
-                # Format entry
-                entry = f"#{snap.id}: {snap.message} - {time_str}"
+                short_id = snap.id[:7] if snap.id else '?'
+                entry = f"[{short_id}] {snap.message} - {time_str}"
 
                 self.history_listbox.insert(tk.END, entry)
                 idx = self.history_listbox.size() - 1
 
-                # Determine change type and color
                 change_type = self.analyze_change_type(snap, i, snapshots)
                 if change_type == 'insert':
-                    bg_color = '#90ee90'  # Light green
+                    bg_color = '#90ee90'
                 elif change_type == 'delete':
-                    bg_color = '#ff9999'  # Light red
+                    bg_color = '#ff9999'
                 elif change_type == 'mixed':
-                    bg_color = '#b0c4de'  # Light blue
+                    bg_color = '#b0c4de'
                 else:
                     bg_color = None
 
@@ -447,14 +439,11 @@ class MemoApp:
 
     def analyze_change_type(self, snapshot: Snapshot, index: int, snapshots: List[Snapshot]) -> str:
         """Analyze the type of change in this snapshot."""
-        # Get previous snapshot
         if index >= len(snapshots) - 1:
-            # First snapshot, consider it as insert
             return 'insert'
 
         prev_snapshot = snapshots[index + 1]
 
-        # Get file contents
         current_content = snapshot.files.get('memo.txt', '')
         prev_content = prev_snapshot.files.get('memo.txt', '')
 
@@ -463,7 +452,6 @@ class MemoApp:
         if prev_content and not current_content:
             return 'delete'
 
-        # Analyze diff
         try:
             diff_ops = get_character_diff(prev_content, current_content)
 
@@ -484,7 +472,7 @@ class MemoApp:
                 return 'delete'
             else:
                 return 'mixed'
-        except:
+        except Exception:
             return 'mixed'
 
     def on_history_select(self, event):
@@ -497,16 +485,12 @@ class MemoApp:
 
         idx = selection[0]
 
-        # Check if valid snapshot
         if not hasattr(self, 'snapshots') or idx >= len(self.snapshots):
             return
 
         selected_snapshot = self.snapshots[idx]
-
-        # Enable restore button
         self.restore_button.configure(state="normal")
 
-        # Compare selected snapshot against its previous snapshot
         new_content = selected_snapshot.files.get('memo.txt', '')
 
         if idx + 1 < len(self.snapshots):
@@ -515,7 +499,6 @@ class MemoApp:
         else:
             old_content = ''
 
-        # Show diff
         self.show_diff(old_content, new_content)
 
     def show_diff(self, old_content: str, new_content: str):
@@ -553,16 +536,15 @@ class MemoApp:
 
         idx = selection[0]
 
-        # Check if valid snapshot
         if not hasattr(self, 'snapshots') or idx >= len(self.snapshots):
             return
 
         selected_snapshot = self.snapshots[idx]
+        short_id = selected_snapshot.id[:7] if selected_snapshot.id else '?'
 
-        # Confirm restore
         result = messagebox.askyesno(
             "Restore Version",
-            f"Restore snapshot #{selected_snapshot.id}?\n\n"
+            f"Restore snapshot [{short_id}]?\n\n"
             f"Message: {selected_snapshot.message}\n"
             f"Time: {selected_snapshot.timestamp}\n\n"
             f"Current unsaved changes will be lost."
@@ -571,36 +553,42 @@ class MemoApp:
         if not result:
             return
 
-        # Get content from snapshot
         content = selected_snapshot.files.get('memo.txt', '')
 
-        # Set to editor
         self.text_editor.delete('1.0', tk.END)
         self.text_editor.insert('1.0', content)
 
-        # Mark as modified (not saved yet)
-        self.last_saved_content = ""  # Force modified state
+        self.last_saved_content = ""
         self.modified = True
         self.update_status()
 
         messagebox.showinfo(
             "Version Restored",
-            f"Snapshot #{selected_snapshot.id} has been restored to the editor.\n\n"
+            f"Snapshot [{short_id}] has been restored to the editor.\n\n"
             "Don't forget to Save & Commit to preserve this change."
         )
 
     def update_status(self):
-        """Update status bar with current repository state."""
+        """Update status bar with current repository state and sync info."""
         try:
             last_snapshot, changes = self.repo.get_status()
 
             if last_snapshot:
-                status = f"Snapshot #{last_snapshot.id}: {last_snapshot.message}"
+                short_id = last_snapshot.id[:7] if last_snapshot.id else '?'
+                status = f"[{short_id}] {last_snapshot.message}"
 
                 if self.modified:
                     status += " | Modified ✏️"
                 else:
                     status += " | Clean ✓"
+
+                # Show sync status if upstream is configured
+                count = self.repo.get_unpushed_count()
+                if count is not None:
+                    if count > 0:
+                        status += f" | ↑{count} unpushed"
+                    else:
+                        status += " | ✓ synced"
             else:
                 status = "No snapshots yet"
                 if self.modified:
@@ -611,22 +599,273 @@ class MemoApp:
         except Exception as e:
             self.status_label.configure(text=f"Status: Error - {e}")
 
+    def push_to_remote(self):
+        """Push to remote, showing remote settings dialog if no remote is set."""
+        remote_url = self.repo.get_remote_url()
+        if not remote_url:
+            if self.repo.is_gh_available():
+                self.show_github_create_dialog()
+            else:
+                self.show_remote_settings()
+            return
+
+        success, msg = self.repo.push()
+        if success:
+            self.status_label.configure(text="✓ Push successful")
+            self.update_status()
+        else:
+            retry = messagebox.askyesno(
+                "Push Failed",
+                f"Push 실패:\n{msg}\n\nRemote 주소를 재설정하시겠습니까?"
+            )
+            if retry:
+                self.show_remote_settings()
+
+    def show_github_create_dialog(self):
+        """Show dialog to create a new GitHub repository via gh CLI."""
+        username = self.repo.get_gh_username() or "unknown"
+
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("GitHub 저장소 생성")
+        dialog.geometry("460x260")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - dialog.winfo_width()) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - dialog.winfo_height()) // 2
+        dialog.geometry(f"+{x}+{y}")
+
+        # Account info row
+        account_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        account_frame.pack(fill="x", padx=20, pady=(15, 5))
+        ctk.CTkLabel(
+            account_frame,
+            text=f"계정: {username}  (GitHub CLI 연결됨 ✓)",
+            font=ctk.CTkFont(size=12),
+            text_color=("gray40", "gray70")
+        ).pack(side="left")
+
+        # Repo name entry
+        ctk.CTkLabel(
+            dialog,
+            text="저장소 이름:",
+            font=ctk.CTkFont(size=13)
+        ).pack(anchor="w", padx=20, pady=(5, 2))
+
+        name_entry = ctk.CTkEntry(
+            dialog,
+            font=ctk.CTkFont(family="Consolas", size=12),
+            height=35
+        )
+        name_entry.pack(fill="x", padx=20)
+        name_entry.insert(0, "memit-memo")
+        name_entry.focus()
+
+        # Live preview label
+        preview_label = ctk.CTkLabel(
+            dialog,
+            text=f"→ github.com/{username}/memit-memo",
+            font=ctk.CTkFont(family="Consolas", size=11),
+            text_color=("gray40", "gray60")
+        )
+        preview_label.pack(anchor="w", padx=22, pady=(2, 8))
+
+        def update_preview(event=None):
+            name = name_entry.get().strip() or "..."
+            preview_label.configure(text=f"→ github.com/{username}/{name}")
+
+        name_entry.bind('<KeyRelease>', update_preview)
+
+        # Visibility radio buttons
+        visibility_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        visibility_frame.pack(fill="x", padx=20, pady=(0, 12))
+
+        is_private = tk.BooleanVar(value=True)
+
+        ctk.CTkRadioButton(
+            visibility_frame,
+            text="Private (기본)",
+            variable=is_private,
+            value=True,
+            font=ctk.CTkFont(size=12)
+        ).pack(side="left", padx=(0, 20))
+
+        ctk.CTkRadioButton(
+            visibility_frame,
+            text="Public",
+            variable=is_private,
+            value=False,
+            font=ctk.CTkFont(size=12)
+        ).pack(side="left")
+
+        # Buttons row
+        button_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        button_frame.pack(pady=5)
+
+        create_btn = ctk.CTkButton(
+            button_frame,
+            text="생성 & Push",
+            width=120,
+            font=ctk.CTkFont(size=13, weight="bold")
+        )
+        create_btn.pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            button_frame,
+            text="URL 직접 입력",
+            width=120,
+            font=ctk.CTkFont(size=12),
+            fg_color=("gray60", "gray35"),
+            hover_color=("gray50", "gray45"),
+            command=lambda: [dialog.destroy(), self.show_remote_settings()]
+        ).pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            button_frame,
+            text="취소",
+            width=80,
+            font=ctk.CTkFont(size=12),
+            fg_color=("gray60", "gray35"),
+            hover_color=("gray50", "gray45"),
+            command=dialog.destroy
+        ).pack(side="left", padx=5)
+
+        def on_create():
+            name = name_entry.get().strip()
+            if not name:
+                messagebox.showwarning("입력 오류", "저장소 이름을 입력하세요.", parent=dialog)
+                return
+
+            create_btn.configure(state="disabled", text="생성 중...")
+            dialog.update()
+
+            success, result = self.repo.create_github_repo(name, private=is_private.get())
+
+            if success:
+                dialog.destroy()
+                self.status_label.configure(text=f"✓ GitHub 저장소 생성 및 Push 완료: {result}")
+                self.update_status()
+            else:
+                create_btn.configure(state="normal", text="생성 & Push")
+                messagebox.showerror("생성 실패", f"저장소 생성에 실패했습니다:\n{result}", parent=dialog)
+
+        create_btn.configure(command=on_create)
+        name_entry.bind('<Return>', lambda e: on_create())
+
+    def show_remote_settings(self):
+        """Show dialog to configure remote URL."""
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Remote 설정")
+        dialog.geometry("500x200")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - dialog.winfo_width()) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - dialog.winfo_height()) // 2
+        dialog.geometry(f"+{x}+{y}")
+
+        current_url = self.repo.get_remote_url() or ""
+
+        ctk.CTkLabel(
+            dialog,
+            text="GitHub Remote URL:",
+            font=ctk.CTkFont(size=13, weight="bold")
+        ).pack(pady=(15, 5), padx=15, anchor="w")
+
+        url_entry = ctk.CTkEntry(
+            dialog,
+            font=ctk.CTkFont(family="Consolas", size=11),
+            height=35,
+            placeholder_text="repo-name  또는  https://github.com/username/repo.git"
+        )
+        url_entry.pack(fill="x", padx=15, pady=5)
+        if current_url:
+            url_entry.insert(0, current_url)
+        url_entry.focus()
+
+        ctk.CTkLabel(
+            dialog,
+            text="인증은 Git Credential Manager 또는 SSH 키를 사용하세요.",
+            font=ctk.CTkFont(size=11),
+            text_color=("gray50", "gray60")
+        ).pack(padx=15, anchor="w")
+
+        button_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        button_frame.pack(pady=15)
+
+        def on_save():
+            url = url_entry.get().strip()
+            if not url:
+                messagebox.showwarning("입력 오류", "URL을 입력하세요.")
+                return
+            # 저장소명만 입력한 경우 full URL로 자동 변환
+            if '/' not in url and '.' not in url:
+                username = self.repo.get_gh_username() or ""
+                if not username:
+                    messagebox.showwarning("입력 오류", "저장소명만 입력하려면 gh CLI 인증이 필요합니다.\n전체 URL을 입력하세요.")
+                    return
+                url = f"https://github.com/{username}/{url}.git"
+            if self.repo.set_remote_url(url):
+                dialog.destroy()
+                self.update_status()
+                # Offer to push immediately
+                if messagebox.askyesno("Push", f"Remote URL이 설정되었습니다.\n지금 Push하시겠습니까?"):
+                    self.push_to_remote()
+            else:
+                messagebox.showerror("오류", "Remote URL 설정에 실패했습니다.")
+
+        def on_cancel():
+            dialog.destroy()
+
+        ctk.CTkButton(
+            button_frame,
+            text="저장",
+            command=on_save,
+            width=100
+        ).pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            button_frame,
+            text="취소",
+            command=on_cancel,
+            width=100,
+            fg_color="gray50",
+            hover_color="gray40"
+        ).pack(side="left", padx=5)
+
+        url_entry.bind('<Return>', lambda e: on_save())
+        url_entry.bind('<Escape>', lambda e: on_cancel())
+
+        dialog.wait_window()
+
+    def _auto_pull(self):
+        """Pull from remote on startup (silently ignore failures)."""
+        try:
+            success, msg = self.repo.pull()
+            if success and msg not in ("skipped (no remote)", "Already up to date"):
+                # Refresh UI if we pulled new commits
+                self.refresh_history()
+                self.update_status()
+        except Exception:
+            pass  # Network unavailable or other error — ignore silently
+
     def show_history_context_menu(self, event):
         """Show context menu on right-click."""
-        # Select the item under cursor
         index = self.history_listbox.nearest(event.y)
         self.history_listbox.selection_clear(0, tk.END)
         self.history_listbox.selection_set(index)
         self.history_listbox.activate(index)
 
-        # Show context menu
         try:
             self.history_context_menu.tk_popup(event.x_root, event.y_root)
         finally:
             self.history_context_menu.grab_release()
 
     def edit_commit_message(self):
-        """Edit the commit message of the selected snapshot."""
+        """Edit the commit message of the selected snapshot (HEAD only, unpushed only)."""
         selection = self.history_listbox.curselection()
 
         if not selection:
@@ -634,20 +873,28 @@ class MemoApp:
 
         idx = selection[0]
 
-        # Check if valid snapshot
         if not hasattr(self, 'snapshots') or idx >= len(self.snapshots):
             return
 
         selected_snapshot = self.snapshots[idx]
+        short_id = selected_snapshot.id[:7] if selected_snapshot.id else '?'
 
-        # Show dialog to edit message
+        # Only HEAD is editable
+        head_snap = self.repo.get_last_snapshot()
+        if head_snap is None or head_snap.id != selected_snapshot.id:
+            messagebox.showinfo(
+                "알림",
+                "가장 최근 스냅샷의 메시지만 수정할 수 있습니다.\n"
+                "(Push되지 않은 커밋에 한해)"
+            )
+            return
+
         dialog = ctk.CTkToplevel(self.root)
         dialog.title("커밋 메시지 수정")
         dialog.geometry("450x150")
         dialog.transient(self.root)
         dialog.grab_set()
 
-        # Center the dialog
         dialog.update_idletasks()
         x = self.root.winfo_x() + (self.root.winfo_width() - dialog.winfo_width()) // 2
         y = self.root.winfo_y() + (self.root.winfo_height() - dialog.winfo_height()) // 2
@@ -655,14 +902,12 @@ class MemoApp:
 
         result = {"message": None}
 
-        # Label
         ctk.CTkLabel(
             dialog,
-            text=f"Snapshot #{selected_snapshot.id}의 메시지를 수정:",
+            text=f"[{short_id}] 메시지 수정:",
             font=ctk.CTkFont(size=13)
         ).pack(pady=(15, 10), padx=15)
 
-        # Entry with current message
         entry = ctk.CTkEntry(dialog, font=ctk.CTkFont(family="Consolas", size=12), height=35)
         entry.pack(fill="x", padx=15, pady=10)
         entry.insert(0, selected_snapshot.message)
@@ -679,7 +924,6 @@ class MemoApp:
             result["message"] = None
             dialog.destroy()
 
-        # Buttons
         button_frame = ctk.CTkFrame(dialog, fg_color="transparent")
         button_frame.pack(pady=10)
 
@@ -699,20 +943,20 @@ class MemoApp:
             hover_color="gray40"
         ).pack(side="left", padx=5)
 
-        # Bind keys
         entry.bind('<Return>', lambda e: on_ok())
         entry.bind('<Escape>', lambda e: on_cancel())
 
         dialog.wait_window()
 
-        # Update the snapshot message
         if result["message"]:
             try:
-                selected_snapshot.message = result["message"]
-                selected_snapshot.save(self.repo.memit_dir)
-                self.refresh_history()
-                self.update_status()
-                self.status_label.configure(text=f"✓ Snapshot #{selected_snapshot.id} 메시지 수정됨")
+                ok, reason = self.repo.update_commit_message(selected_snapshot.id, result["message"])
+                if ok:
+                    self.refresh_history()
+                    self.update_status()
+                    self.status_label.configure(text=f"✓ [{short_id}] 메시지 수정됨")
+                else:
+                    messagebox.showerror("Error", f"메시지 수정 실패: {reason}")
             except Exception as e:
                 messagebox.showerror("Error", f"메시지 수정 실패: {e}")
 

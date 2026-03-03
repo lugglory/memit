@@ -1,41 +1,25 @@
 """
-snapshot.py: Snapshot creation, loading, and file collection.
+snapshot.py: Snapshot creation and git-based loading.
 """
-import json
-import shutil
+import re
+import subprocess
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Set
 from datetime import datetime
 
 
 def is_binary_file(file_path: Path) -> bool:
-    """
-    Check if a file is binary by looking for null bytes in the first 8KB.
-
-    Args:
-        file_path: Path to the file
-
-    Returns:
-        True if the file appears to be binary
-    """
+    """Check if a file is binary by looking for null bytes in the first 8KB."""
     try:
         with open(file_path, 'rb') as f:
             chunk = f.read(8192)
             return b'\x00' in chunk
     except Exception:
-        return True  # Conservative: treat unreadable files as binary
+        return True
 
 
 def read_file_content(file_path: Path) -> Optional[str]:
-    """
-    Read file content as text, with fallback encoding.
-
-    Args:
-        file_path: Path to the file
-
-    Returns:
-        File content as string, or None if it's binary or unreadable
-    """
+    """Read file content as text, with fallback encoding."""
     if is_binary_file(file_path):
         return None
 
@@ -53,35 +37,23 @@ def read_file_content(file_path: Path) -> Optional[str]:
 
 
 class Snapshot:
-    """Represents a single snapshot in the repository."""
+    """Represents a single snapshot (git commit) in the repository."""
 
     def __init__(
         self,
-        snapshot_id: int,
+        snapshot_id: str,
         message: str,
         timestamp: str,
-        parent: Optional[int],
-        files: Dict[str, str],
+        parent: Optional[str],
+        files: Dict[str, Optional[str]],
         amended: bool = False,
         amend_count: int = 0
     ):
-        """
-        Initialize a snapshot.
-
-        Args:
-            snapshot_id: Unique snapshot ID
-            message: Commit message
-            timestamp: ISO format timestamp
-            parent: Parent snapshot ID (None for first snapshot)
-            files: Dict mapping relative path to file content
-            amended: Whether this snapshot was created by amending
-            amend_count: Number of times this snapshot has been amended
-        """
         self.id = snapshot_id
         self.message = message
         self.timestamp = timestamp
         self.parent = parent
-        self.files = files  # {rel_path_str: content}
+        self.files = files
         self.amended = amended
         self.amend_count = amend_count
 
@@ -89,44 +61,24 @@ class Snapshot:
     def from_working_directory(
         cls,
         repo_root: Path,
-        snapshot_id: int,
+        snapshot_id: str,
         message: str,
-        parent: Optional[int],
-        tracked_files: set[Path],
+        parent: Optional[str],
+        tracked_files: Set[Path],
         amended: bool = False,
         amend_count: int = 0
     ) -> 'Snapshot':
-        """
-        Create a snapshot from the current working directory.
-
-        Args:
-            repo_root: Repository root directory
-            snapshot_id: ID for this snapshot
-            message: Commit message
-            parent: Parent snapshot ID
-            tracked_files: Set of absolute paths to track
-            amended: Whether this is an amend operation
-            amend_count: Number of times amended
-
-        Returns:
-            New Snapshot instance
-        """
-        files = {}
+        """Create a snapshot from the current working directory."""
+        files: Dict[str, Optional[str]] = {}
 
         for file_path in tracked_files:
             try:
                 rel_path = file_path.relative_to(repo_root)
+                # Normalize to forward slashes for cross-platform consistency
+                rel_key = str(rel_path).replace('\\', '/')
                 content = read_file_content(file_path)
-
-                # Store even binary files, but with None content
-                # (for tracking their existence)
-                if content is not None:
-                    files[str(rel_path)] = content
-                else:
-                    files[str(rel_path)] = None  # Binary marker
-
+                files[rel_key] = content
             except Exception:
-                # Skip files that can't be processed
                 continue
 
         return cls(
@@ -139,97 +91,81 @@ class Snapshot:
             amend_count=amend_count
         )
 
-    def save(self, memit_dir: Path):
-        """
-        Save snapshot to disk.
+    @classmethod
+    def from_git_ref(cls, repo_root: Path, ref: str) -> Optional['Snapshot']:
+        """Load a snapshot from a git commit reference (hash, HEAD, HEAD~1, etc.)."""
 
-        Args:
-            memit_dir: .memit directory path
-        """
-        snapshot_dir = memit_dir / 'snapshots' / str(self.id)
-        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        def _run_text(args):
+            return subprocess.run(
+                ['git'] + args,
+                cwd=str(repo_root),
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace'
+            )
 
-        # Save metadata
-        meta = {
-            'id': self.id,
-            'message': self.message,
-            'timestamp': self.timestamp,
-            'parent': self.parent,
-            'files': list(self.files.keys()),
-            'amended': self.amended,
-            'amend_count': self.amend_count
-        }
+        # Get commit metadata: hash, parent hashes, subject, body, author date
+        meta = _run_text(['log', '-1', '--format=%H%x00%P%x00%s%x00%b%x00%ai', ref])
+        if meta.returncode != 0 or not meta.stdout.strip():
+            return None
 
-        with open(snapshot_dir / 'meta.json', 'w', encoding='utf-8') as f:
-            json.dump(meta, f, indent=2)
+        # Split on null bytes (used as field separator in format string)
+        raw = meta.stdout.rstrip('\n')
+        parts = raw.split('\x00')
+        while len(parts) < 5:
+            parts.append('')
 
-        # Save files
-        files_dir = snapshot_dir / 'files'
-        files_dir.mkdir(exist_ok=True)
+        commit_hash = parts[0].strip()
+        parent_hashes = parts[1].strip().split()
+        parent_hash = parent_hashes[0] if parent_hashes else None
+        subject = parts[2].strip()
+        body = parts[3]
+        timestamp = parts[4].strip()
 
-        for rel_path, content in self.files.items():
-            if content is None:
-                # Binary file marker
+        if not commit_hash:
+            return None
+
+        # Parse memit metadata from commit body
+        amended = bool(re.search(r'memit-amended:\s*true', body))
+        amend_match = re.search(r'memit-amend-count:\s*(\d+)', body)
+        amend_count = int(amend_match.group(1)) if amend_match else 0
+
+        # Get file list for this ref
+        ls = _run_text(['ls-tree', '-r', '--name-only', ref])
+        file_paths = [p for p in ls.stdout.strip().split('\n') if p] if ls.stdout.strip() else []
+
+        # Get file contents (run without text mode to detect binary files)
+        files: Dict[str, Optional[str]] = {}
+        for path in file_paths:
+            show_result = subprocess.run(
+                ['git', 'show', f'{ref}:{path}'],
+                cwd=str(repo_root),
+                capture_output=True
+            )
+            if show_result.returncode != 0:
+                files[path] = None
                 continue
 
-            file_path = files_dir / rel_path
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(content)
-
-    @classmethod
-    def load(cls, memit_dir: Path, snapshot_id: int) -> 'Snapshot':
-        """
-        Load snapshot from disk.
-
-        Args:
-            memit_dir: .memit directory path
-            snapshot_id: ID of snapshot to load
-
-        Returns:
-            Loaded Snapshot instance
-        """
-        snapshot_dir = memit_dir / 'snapshots' / str(snapshot_id)
-
-        # Load metadata
-        with open(snapshot_dir / 'meta.json', 'r', encoding='utf-8') as f:
-            meta = json.load(f)
-
-        # Load files
-        files = {}
-        files_dir = snapshot_dir / 'files'
-
-        if files_dir.exists():
-            for rel_path in meta['files']:
-                file_path = files_dir / rel_path
-
-                if file_path.exists():
+            content_bytes = show_result.stdout
+            # Detect binary by checking for null bytes in first 8KB
+            if b'\x00' in content_bytes[:8192]:
+                files[path] = None
+            else:
+                try:
+                    files[path] = content_bytes.decode('utf-8')
+                except UnicodeDecodeError:
                     try:
-                        with open(file_path, 'r', encoding='utf-8') as f:
-                            files[rel_path] = f.read()
+                        files[path] = content_bytes.decode('latin-1')
                     except Exception:
-                        files[rel_path] = None  # Binary or unreadable
-                else:
-                    files[rel_path] = None  # Binary file
+                        files[path] = None
 
         return cls(
-            snapshot_id=meta['id'],
-            message=meta['message'],
-            timestamp=meta['timestamp'],
-            parent=meta.get('parent'),
+            snapshot_id=commit_hash,
+            message=subject,
+            timestamp=timestamp,
+            parent=parent_hash,
             files=files,
-            amended=meta.get('amended', False),
-            amend_count=meta.get('amend_count', 0)
+            amended=amended,
+            amend_count=amend_count
         )
-
-    def delete(self, memit_dir: Path):
-        """
-        Delete snapshot from disk.
-
-        Args:
-            memit_dir: .memit directory path
-        """
-        snapshot_dir = memit_dir / 'snapshots' / str(self.id)
-        if snapshot_dir.exists():
-            shutil.rmtree(snapshot_dir)

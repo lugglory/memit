@@ -64,11 +64,11 @@ def display_log(snapshots: List[Snapshot]):
         if snapshot.amended and snapshot.amend_count > 0:
             amend_marker = colorize(f" (amended {snapshot.amend_count}x)", Colors.YELLOW)
 
-        print(f"{colorize(f'snapshot {snapshot.id}', Colors.YELLOW)}{amend_marker}")
+        print(f"{colorize(f'snapshot {snapshot.id[:7]}', Colors.YELLOW)}{amend_marker}")
 
         # Parent info
         if snapshot.parent is not None:
-            print(f"Parent:  {snapshot.parent}")
+            print(f"Parent:  {snapshot.parent[:7]}")
 
         # Timestamp
         print(f"Date:    {snapshot.timestamp}")
@@ -90,7 +90,7 @@ def display_status(last_snapshot: Optional[Snapshot], changes: Dict[str, List[st
         changes: Dict with 'modified', 'added', 'deleted' lists
     """
     if last_snapshot:
-        print(f"On snapshot {last_snapshot.id}")
+        print(f"On snapshot {last_snapshot.id[:7]}")
     else:
         print("No commits yet")
 

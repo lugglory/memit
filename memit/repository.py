@@ -1,131 +1,82 @@
 """
-repository.py: Repository management (init, commit, log, status).
+repository.py: Repository management using git as backend.
 """
-import json
+import subprocess
 from pathlib import Path
 from typing import List, Optional, Tuple
-from .snapshot import Snapshot
+from .snapshot import Snapshot, read_file_content
 from .ignore import IgnoreHandler
 from .amend_check import check_amend_safe
 
 
 class Repository:
-    """Manages a memit repository."""
+    """Manages a memit repository backed by git."""
 
     def __init__(self, root: Path):
-        """
-        Initialize repository manager.
-
-        Args:
-            root: Root directory of the repository
-        """
         self.root = Path(root).resolve()
-        self.memit_dir = self.root / '.memit'
-        self.config_file = self.memit_dir / 'config.json'
-        self.snapshots_dir = self.memit_dir / 'snapshots'
+        self.git_dir = self.root / '.git'
 
     def is_initialized(self) -> bool:
-        """Check if this is a valid memit repository."""
-        return self.memit_dir.exists() and self.config_file.exists()
+        """Check if this is a valid memit repository (git repo exists)."""
+        return self.git_dir.exists()
 
     def init(self) -> str:
-        """
-        Initialize a new memit repository.
-
-        Returns:
-            Success message
-        """
+        """Initialize a new git-backed memit repository."""
         if self.is_initialized():
             return "Repository already initialized"
 
-        # Create directory structure
-        self.memit_dir.mkdir(exist_ok=True)
-        self.snapshots_dir.mkdir(exist_ok=True)
+        result = self._run_git(['init'])
+        if result.returncode != 0:
+            return f"Failed to initialize: {result.stderr}"
 
-        # Create config
-        config = {
-            'version': 1,
-            'next_id': 1
-        }
+        # Configure a local git identity so commits work without user config
+        self._run_git(['config', 'user.name', 'memit'])
+        self._run_git(['config', 'user.email', 'memit@local'])
 
-        with open(self.config_file, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=2)
+        # Create .gitignore to exclude old .memit snapshot directory
+        gitignore = self.root / '.gitignore'
+        if not gitignore.exists():
+            gitignore.write_text('.memit/\n', encoding='utf-8')
 
-        return f"Initialized memit repository in {self.memit_dir}"
+        return f"Initialized memit repository in {self.git_dir}"
 
-    def _load_config(self) -> dict:
-        """Load repository configuration."""
-        with open(self.config_file, 'r', encoding='utf-8') as f:
-            return json.load(f)
+    def _run_git(self, args: list) -> subprocess.CompletedProcess:
+        """Run a git command in the repository root."""
+        return subprocess.run(
+            ['git'] + args,
+            cwd=str(self.root),
+            capture_output=True,
+            text=True,
+            encoding='utf-8'
+        )
 
-    def _save_config(self, config: dict):
-        """Save repository configuration."""
-        with open(self.config_file, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=2)
-
-    def _get_next_id(self) -> int:
-        """Get and increment the next snapshot ID."""
-        config = self._load_config()
-        snapshot_id = config['next_id']
-        config['next_id'] = snapshot_id + 1
-        self._save_config(config)
-        return snapshot_id
-
-    def _get_snapshot_ids(self) -> List[int]:
-        """Get all snapshot IDs in chronological order."""
-        if not self.snapshots_dir.exists():
+    def _get_commit_hashes(self, limit: Optional[int] = None) -> List[str]:
+        """Get commit hashes in reverse chronological order (newest first)."""
+        args = ['log', '--format=%H']
+        if limit:
+            args += ['-n', str(limit)]
+        result = self._run_git(args)
+        if result.returncode != 0 or not result.stdout.strip():
             return []
-
-        ids = []
-        for snapshot_dir in self.snapshots_dir.iterdir():
-            if snapshot_dir.is_dir():
-                try:
-                    ids.append(int(snapshot_dir.name))
-                except ValueError:
-                    continue
-
-        return sorted(ids)
+        return [h.strip() for h in result.stdout.strip().split('\n') if h.strip()]
 
     def get_snapshots(self, limit: Optional[int] = None) -> List[Snapshot]:
-        """
-        Get snapshots in reverse chronological order.
-
-        Args:
-            limit: Maximum number of snapshots to return
-
-        Returns:
-            List of Snapshot objects
-        """
-        ids = self._get_snapshot_ids()
-
-        if limit:
-            ids = ids[-limit:]
-
+        """Get snapshots in reverse chronological order (newest first)."""
+        hashes = self._get_commit_hashes(limit=limit)
         snapshots = []
-        for snapshot_id in reversed(ids):
-            try:
-                snapshot = Snapshot.load(self.memit_dir, snapshot_id)
-                snapshots.append(snapshot)
-            except Exception:
-                continue
-
+        for h in hashes:
+            snap = Snapshot.from_git_ref(self.root, h)
+            if snap:
+                snapshots.append(snap)
         return snapshots
 
     def get_last_snapshot(self) -> Optional[Snapshot]:
-        """Get the most recent snapshot."""
-        ids = self._get_snapshot_ids()
-        if not ids:
-            return None
-
-        return Snapshot.load(self.memit_dir, ids[-1])
+        """Get the most recent snapshot (HEAD)."""
+        return Snapshot.from_git_ref(self.root, 'HEAD')
 
     def get_second_last_snapshot(self) -> Optional[Snapshot]:
-        """Get the second most recent snapshot."""
-        ids = self._get_snapshot_ids()
-        if len(ids) < 2:
-            return None
-
-        return Snapshot.load(self.memit_dir, ids[-2])
+        """Get the second most recent snapshot (HEAD~1)."""
+        return Snapshot.from_git_ref(self.root, 'HEAD~1')
 
     def commit(
         self,
@@ -133,102 +84,47 @@ class Repository:
         force_new: bool = False,
         force_amend: bool = False
     ) -> Tuple[bool, str]:
-        """
-        Create a new commit or amend the last one.
-
-        Args:
-            message: Commit message
-            force_new: Force creation of new snapshot (ignore amend logic)
-            force_amend: Force amend of last snapshot (dangerous!)
-
-        Returns:
-            Tuple of (success, message)
-        """
+        """Create a new commit or amend the last one using smart amend logic."""
         if not self.is_initialized():
             return False, "Not a memit repository (run 'memit init')"
 
-        # Collect tracked files
+        # Collect tracked files from working directory
         ignore_handler = IgnoreHandler(self.root)
         tracked_files = ignore_handler.get_tracked_files()
 
-        # Get current working directory state
+        # Build working directory snapshot for comparison
         current_snapshot = Snapshot.from_working_directory(
             repo_root=self.root,
-            snapshot_id=0,  # Temporary ID
+            snapshot_id='',
             message=message,
-            parent=None,  # Will be set later
+            parent=None,
             tracked_files=tracked_files
         )
 
-        # Get existing snapshots
         last_snapshot = self.get_last_snapshot()
         second_last_snapshot = self.get_second_last_snapshot()
 
-        # Case 1: No snapshots yet - create first snapshot
+        # Case 1: No commits yet — create first commit
         if last_snapshot is None:
-            snapshot_id = self._get_next_id()
-            snapshot = Snapshot.from_working_directory(
-                repo_root=self.root,
-                snapshot_id=snapshot_id,
-                message=message,
-                parent=None,
-                tracked_files=tracked_files
-            )
-            snapshot.save(self.memit_dir)
-            return True, f"Created snapshot {snapshot_id}"
+            return self._do_commit(message)
 
-        # Case 2: Only one snapshot exists - always create new snapshot
-        if second_last_snapshot is None:
-            # Check if there are any changes
-            if current_snapshot.files == last_snapshot.files:
-                return False, "nothing to commit, working directory clean"
-
-            snapshot_id = self._get_next_id()
-            snapshot = Snapshot.from_working_directory(
-                repo_root=self.root,
-                snapshot_id=snapshot_id,
-                message=message,
-                parent=last_snapshot.id,
-                tracked_files=tracked_files
-            )
-            snapshot.save(self.memit_dir)
-            return True, f"Created snapshot {snapshot_id}"
-
-        # Case 3: Two or more snapshots exist - smart amend logic
-        # Check if there are any changes
+        # Case 2: No changes from last commit
         if current_snapshot.files == last_snapshot.files:
             return False, "nothing to commit, working directory clean"
 
-        # Force flags override logic
+        # Force flags override
         if force_new and force_amend:
             return False, "Cannot use both --force-new and --force-amend"
 
         if force_new:
-            # Force create new snapshot
-            snapshot_id = self._get_next_id()
-            snapshot = Snapshot.from_working_directory(
-                repo_root=self.root,
-                snapshot_id=snapshot_id,
-                message=message,
-                parent=last_snapshot.id,
-                tracked_files=tracked_files
-            )
-            snapshot.save(self.memit_dir)
-            return True, f"Created snapshot {snapshot_id}"
+            return self._do_commit(message)
 
         if force_amend:
-            # Force amend (dangerous!)
-            snapshot = Snapshot.from_working_directory(
-                repo_root=self.root,
-                snapshot_id=last_snapshot.id,
-                message=message,
-                parent=last_snapshot.parent,
-                tracked_files=tracked_files,
-                amended=True,
-                amend_count=last_snapshot.amend_count + 1
-            )
-            snapshot.save(self.memit_dir)
-            return True, f"Amended snapshot {last_snapshot.id} (forced)"
+            return self._do_amend(message, last_snapshot.amend_count + 1)
+
+        # Case 3: Only one commit exists — always create new
+        if second_last_snapshot is None:
+            return self._do_commit(message)
 
         # Smart amend logic: check triangle inequality
         is_safe, reason = check_amend_safe(
@@ -237,31 +133,139 @@ class Repository:
             C_files=current_snapshot.files
         )
 
-        if is_safe:
-            # Safe to amend - overwrite last snapshot
-            snapshot = Snapshot.from_working_directory(
-                repo_root=self.root,
-                snapshot_id=last_snapshot.id,
-                message=message,
-                parent=last_snapshot.parent,
-                tracked_files=tracked_files,
-                amended=True,
-                amend_count=last_snapshot.amend_count + 1
-            )
-            snapshot.save(self.memit_dir)
-            return True, f"Amended snapshot {last_snapshot.id} ({reason})"
+        # Amend only if safe AND last commit hasn't been pushed
+        if is_safe and not self._is_last_commit_pushed():
+            return self._do_amend(message, last_snapshot.amend_count + 1)
         else:
-            # Not safe to amend - create new snapshot
-            snapshot_id = self._get_next_id()
-            snapshot = Snapshot.from_working_directory(
-                repo_root=self.root,
-                snapshot_id=snapshot_id,
-                message=message,
-                parent=last_snapshot.id,
-                tracked_files=tracked_files
-            )
-            snapshot.save(self.memit_dir)
-            return True, f"Created snapshot {snapshot_id} (amend unsafe: {reason})"
+            if is_safe and self._is_last_commit_pushed():
+                reason = "commit already pushed to remote"
+            return self._do_commit(message)
+
+    def _do_commit(self, message: str) -> Tuple[bool, str]:
+        """Stage all changes and create a new git commit."""
+        stage = self._run_git(['add', '.'])
+        if stage.returncode != 0:
+            return False, f"Failed to stage files: {stage.stderr.strip()}"
+
+        result = self._run_git(['commit', '-m', message])
+        if result.returncode != 0:
+            output = result.stdout + result.stderr
+            if 'nothing to commit' in output:
+                return False, "nothing to commit, working directory clean"
+            return False, f"Commit failed: {result.stderr.strip()}"
+
+        head = self._run_git(['rev-parse', '--short', 'HEAD'])
+        short_hash = head.stdout.strip() if head.returncode == 0 else '?'
+        return True, f"Created snapshot {short_hash}"
+
+    def _do_amend(self, message: str, amend_count: int) -> Tuple[bool, str]:
+        """Stage all changes and amend the last git commit."""
+        stage = self._run_git(['add', '.'])
+        if stage.returncode != 0:
+            return False, f"Failed to stage files: {stage.stderr.strip()}"
+
+        # Embed memit metadata in commit body
+        full_message = (
+            f"{message}\n\n"
+            f"memit-amended: true\n"
+            f"memit-amend-count: {amend_count}"
+        )
+
+        result = self._run_git(['commit', '--amend', '-m', full_message])
+        if result.returncode != 0:
+            return False, f"Amend failed: {result.stderr.strip()}"
+
+        head = self._run_git(['rev-parse', '--short', 'HEAD'])
+        short_hash = head.stdout.strip() if head.returncode == 0 else '?'
+        return True, f"Amended snapshot {short_hash}"
+
+    def _is_last_commit_pushed(self) -> bool:
+        """
+        Check if HEAD has already been pushed to upstream.
+
+        Returns False (safe to amend) when:
+        - No upstream is configured
+        - There are unpushed commits ahead of upstream
+
+        Returns True (do NOT amend) when:
+        - An upstream exists AND HEAD is already there
+        """
+        result = self._run_git(['log', '@{upstream}..HEAD', '--oneline'])
+        if result.returncode != 0:
+            # No upstream configured → treat HEAD as not pushed (safe to amend)
+            return False
+        return result.stdout.strip() == ''
+
+    def push(self) -> Tuple[bool, str]:
+        """Push current branch to origin."""
+        if not self.get_remote_url():
+            return False, "no remote"
+
+        # Use -u to set upstream tracking on first push
+        result = self._run_git(['push', '-u', 'origin', 'HEAD'])
+        if result.returncode != 0:
+            return False, result.stderr.strip()
+        return True, result.stdout.strip() or "Push successful"
+
+    def pull(self) -> Tuple[bool, str]:
+        """Pull from origin using fast-forward only."""
+        if not self.get_remote_url():
+            return True, "skipped (no remote)"
+
+        result = self._run_git(['pull', '--ff-only'])
+        if result.returncode != 0:
+            return False, result.stderr.strip()
+        return True, result.stdout.strip() or "Already up to date"
+
+    def get_remote_url(self) -> Optional[str]:
+        """Get the URL of the origin remote, or None if not set."""
+        result = self._run_git(['remote', 'get-url', 'origin'])
+        if result.returncode != 0:
+            return None
+        url = result.stdout.strip()
+        return url or None
+
+    def set_remote_url(self, url: str) -> bool:
+        """Add or update the origin remote URL."""
+        if self.get_remote_url():
+            result = self._run_git(['remote', 'set-url', 'origin', url])
+        else:
+            result = self._run_git(['remote', 'add', 'origin', url])
+        return result.returncode == 0
+
+    def update_commit_message(self, commit_hash: str, new_message: str) -> Tuple[bool, str]:
+        """
+        Update the message of the most recent commit (HEAD only, unpushed only).
+
+        Args:
+            commit_hash: The full hash of the commit to update (must be HEAD)
+            new_message: New commit message
+
+        Returns:
+            Tuple of (success, message)
+        """
+        head = self._run_git(['rev-parse', 'HEAD'])
+        if head.returncode != 0:
+            return False, "No commits"
+
+        head_full = head.stdout.strip()
+
+        # Resolve the provided hash to full form for comparison
+        ref_resolve = self._run_git(['rev-parse', commit_hash])
+        if ref_resolve.returncode != 0:
+            return False, f"Cannot resolve commit {commit_hash[:7]}"
+
+        commit_full = ref_resolve.stdout.strip()
+        if head_full != commit_full:
+            return False, "커밋 메시지는 가장 최근 스냅샷만 수정할 수 있습니다"
+
+        if self._is_last_commit_pushed():
+            return False, "이미 push된 커밋의 메시지는 수정할 수 없습니다"
+
+        result = self._run_git(['commit', '--amend', '-m', new_message])
+        if result.returncode != 0:
+            return False, result.stderr.strip()
+        return True, "Message updated"
 
     def get_status(self) -> Tuple[Optional[Snapshot], dict]:
         """
@@ -269,36 +273,28 @@ class Repository:
 
         Returns:
             Tuple of (last_snapshot, changes)
-            - changes: dict with keys 'modified', 'added', 'deleted'
+            where changes has keys 'modified', 'added', 'deleted'
         """
         last_snapshot = self.get_last_snapshot()
 
-        # Collect current files
         ignore_handler = IgnoreHandler(self.root)
         tracked_files = ignore_handler.get_tracked_files()
 
-        current_files = {}
+        current_files: dict = {}
         for file_path in tracked_files:
             try:
                 rel_path = file_path.relative_to(self.root)
-                from .snapshot import read_file_content
+                rel_key = str(rel_path).replace('\\', '/')
                 content = read_file_content(file_path)
-                current_files[str(rel_path)] = content
+                current_files[rel_key] = content
             except Exception:
                 continue
 
-        # Compare with last snapshot
-        changes = {
-            'modified': [],
-            'added': [],
-            'deleted': []
-        }
+        changes = {'modified': [], 'added': [], 'deleted': []}
 
         if last_snapshot is None:
-            # All current files are "added"
             changes['added'] = list(current_files.keys())
         else:
-            # Find changes
             last_files = last_snapshot.files
 
             for path in current_files:
@@ -312,3 +308,59 @@ class Repository:
                     changes['deleted'].append(path)
 
         return last_snapshot, changes
+
+    def get_unpushed_count(self) -> Optional[int]:
+        """
+        Get number of unpushed commits.
+
+        Returns None if no upstream is configured.
+        """
+        result = self._run_git(['rev-list', '@{upstream}..HEAD', '--count'])
+        if result.returncode != 0:
+            return None
+        try:
+            return int(result.stdout.strip())
+        except ValueError:
+            return None
+
+    def is_gh_available(self) -> bool:
+        """gh CLI가 설치되어 있고 인증된 상태인지 확인."""
+        try:
+            result = subprocess.run(['gh', 'auth', 'status'], capture_output=True)
+            return result.returncode == 0
+        except FileNotFoundError:
+            return False
+
+    def get_gh_username(self) -> Optional[str]:
+        """인증된 GitHub 계정명 반환."""
+        try:
+            result = subprocess.run(
+                ['gh', 'api', 'user', '--jq', '.login'],
+                capture_output=True, text=True, encoding='utf-8'
+            )
+            return result.stdout.strip() if result.returncode == 0 else None
+        except FileNotFoundError:
+            return None
+
+    def create_github_repo(self, name: str, private: bool = True) -> Tuple[bool, str]:
+        """
+        GitHub 저장소를 생성하고 현재 커밋을 push.
+        성공 시 (True, remote_url), 실패 시 (False, error_message) 반환.
+        """
+        visibility = '--private' if private else '--public'
+        try:
+            result = subprocess.run(
+                ['gh', 'repo', 'create', name, visibility,
+                 '--source', str(self.root),
+                 '--remote', 'origin',
+                 '--push'],
+                capture_output=True, text=True, encoding='utf-8'
+            )
+        except FileNotFoundError:
+            return False, "GitHub CLI(gh)가 설치되어 있지 않습니다."
+
+        if result.returncode != 0:
+            return False, result.stderr.strip()
+
+        url = self.get_remote_url()
+        return True, url or f"github.com/.../{name}"

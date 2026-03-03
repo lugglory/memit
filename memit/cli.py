@@ -77,22 +77,25 @@ def cmd_diff(args):
         print("Not a memit repository (run 'memit init')")
         sys.exit(1)
 
-    # Get snapshots to compare
-    if args.snapshot_id:
-        # Diff specific snapshot against its parent
-        try:
-            from .snapshot import Snapshot
-            snapshot_b = Snapshot.load(repo.memit_dir, args.snapshot_id)
+    if args.ref:
+        # Diff a specific git ref (hash, HEAD, HEAD~1, etc.) against its parent
+        from .snapshot import Snapshot
+        snapshot_b = Snapshot.from_git_ref(repo.root, args.ref)
 
-            if snapshot_b.parent is None:
-                print(f"Snapshot {args.snapshot_id} has no parent")
-                sys.exit(1)
-
-            snapshot_a = Snapshot.load(repo.memit_dir, snapshot_b.parent)
-            display_snapshot_diff(snapshot_a, snapshot_b)
-        except Exception as e:
-            print(f"Error loading snapshot: {e}")
+        if snapshot_b is None:
+            print(f"Cannot find snapshot: {args.ref}")
             sys.exit(1)
+
+        if snapshot_b.parent is None:
+            print(f"Snapshot {args.ref[:7]} has no parent")
+            sys.exit(1)
+
+        snapshot_a = Snapshot.from_git_ref(repo.root, snapshot_b.parent)
+        if snapshot_a is None:
+            print(f"Cannot load parent snapshot")
+            sys.exit(1)
+
+        display_snapshot_diff(snapshot_a, snapshot_b)
     else:
         # Diff working directory against last snapshot
         last_snapshot = repo.get_last_snapshot()
@@ -101,7 +104,6 @@ def cmd_diff(args):
             print("No commits yet")
             sys.exit(1)
 
-        # Create temporary snapshot for current working directory
         from .ignore import IgnoreHandler
         from .snapshot import Snapshot
 
@@ -110,13 +112,45 @@ def cmd_diff(args):
 
         current_snapshot = Snapshot.from_working_directory(
             repo_root=repo.root,
-            snapshot_id=0,
+            snapshot_id='',
             message="(working directory)",
             parent=None,
             tracked_files=tracked_files
         )
 
         display_snapshot_diff(last_snapshot, current_snapshot)
+
+
+def cmd_push(args):
+    """Push to remote."""
+    repo = Repository(Path.cwd())
+
+    if not repo.is_initialized():
+        print("Not a memit repository (run 'memit init')")
+        sys.exit(1)
+
+    success, message = repo.push()
+    if success:
+        print(f"✓ {message}")
+    else:
+        print(f"✗ Push failed: {message}")
+        sys.exit(1)
+
+
+def cmd_pull(args):
+    """Pull from remote."""
+    repo = Repository(Path.cwd())
+
+    if not repo.is_initialized():
+        print("Not a memit repository (run 'memit init')")
+        sys.exit(1)
+
+    success, message = repo.pull()
+    if success:
+        print(f"✓ {message}")
+    else:
+        print(f"✗ Pull failed: {message}")
+        sys.exit(1)
 
 
 def main():
@@ -143,7 +177,7 @@ def main():
     parser_commit.add_argument(
         '--force-amend',
         action='store_true',
-        help='Force amend of last snapshot (dangerous!)'
+        help='Force amend of last snapshot'
     )
     parser_commit.set_defaults(func=cmd_commit)
 
@@ -158,8 +192,19 @@ def main():
 
     # diff command
     parser_diff = subparsers.add_parser('diff', help='Display diff')
-    parser_diff.add_argument('snapshot_id', type=int, nargs='?', help='Snapshot ID to diff')
+    parser_diff.add_argument(
+        'ref', nargs='?',
+        help='Git ref to diff against its parent (hash, HEAD, HEAD~1, etc.)'
+    )
     parser_diff.set_defaults(func=cmd_diff)
+
+    # push command
+    parser_push = subparsers.add_parser('push', help='Push to remote')
+    parser_push.set_defaults(func=cmd_push)
+
+    # pull command
+    parser_pull = subparsers.add_parser('pull', help='Pull from remote')
+    parser_pull.set_defaults(func=cmd_pull)
 
     args = parser.parse_args()
 
