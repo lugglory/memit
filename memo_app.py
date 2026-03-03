@@ -29,7 +29,15 @@ class MemoApp:
     def __init__(self, root: ctk.CTk):
         self.root = root
         self.root.title("Memit Memo - Simple Version Control")
-        self.root.geometry("1200x800")
+
+        self.root.update_idletasks()
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        w = int(sw * 0.75)
+        h = int(sh * 0.75)
+        x = (sw - w) // 2
+        y = (sh - h) // 2
+        self.root.geometry(f"{w}x{h}+{x}+{y}")
 
         # Initialize memit repository
         self.work_dir = Path.cwd() / "memo_data"
@@ -196,13 +204,31 @@ class MemoApp:
         )
         diff_label.grid(row=3, column=0, pady=(5, 5), sticky="n")
 
-        # Diff text area
-        self.diff_text = ctk.CTkTextbox(
-            self.right_frame,
-            font=ctk.CTkFont(family="Consolas", size=10),
-            wrap="word"
+        # Diff text area (tk.Text for tag-based coloring)
+        diff_frame = ctk.CTkFrame(self.right_frame)
+        diff_frame.grid(row=3, column=0, padx=10, pady=(30, 5), sticky="nsew")
+        diff_frame.grid_rowconfigure(0, weight=1)
+        diff_frame.grid_columnconfigure(0, weight=1)
+
+        diff_scrollbar = ctk.CTkScrollbar(diff_frame)
+        diff_scrollbar.grid(row=0, column=1, sticky="ns")
+
+        self.diff_text = tk.Text(
+            diff_frame,
+            font=('Consolas', 10),
+            wrap='word',
+            bg='#1e1e1e',
+            fg='#d4d4d4',
+            bd=0,
+            highlightthickness=0,
+            yscrollcommand=diff_scrollbar.set,
+            state='disabled'
         )
-        self.diff_text.grid(row=3, column=0, padx=10, pady=(30, 5), sticky="nsew")
+        self.diff_text.grid(row=0, column=0, sticky="nsew")
+        diff_scrollbar.configure(command=self.diff_text.yview)
+
+        self.diff_text.tag_config('delete', foreground='#ff6b6b', background='#3d1a1a')
+        self.diff_text.tag_config('insert', foreground='#69db7c', background='#1a3d1a')
 
         # Restore button
         self.restore_button = ctk.CTkButton(
@@ -214,6 +240,24 @@ class MemoApp:
             height=32
         )
         self.restore_button.grid(row=4, column=0, pady=10, padx=10)
+
+    def _auto_message(self, old_content: str, new_content: str) -> str:
+        """Generate commit message from first 10 chars of changed content."""
+        diff_ops = get_character_diff(old_content, new_content)
+
+        changed = ''
+        for op, text in diff_ops:
+            if op in ('insert', 'delete'):
+                changed += text.replace('\n', ' ')
+                if len(changed) >= 10:
+                    break
+
+        changed = changed.strip()
+        if not changed:
+            return '(no changes)'
+        if len(changed) > 10:
+            return changed[:10] + '..'
+        return changed
 
     def on_text_modified(self, event=None):
         """Handle text modification event."""
@@ -240,16 +284,11 @@ class MemoApp:
         content = self.text_editor.get('1.0', 'end-1c')
 
         # Determine commit message
-        message = None
+        custom_message = None
         if self.use_custom_msg.get():
-            # Show modal dialog for custom message
-            message = self.show_commit_message_dialog()
-            if message is None:  # User cancelled
+            custom_message = self.show_commit_message_dialog()
+            if custom_message is None:  # User cancelled
                 return
-        else:
-            # Generate automatic commit message with ordinal number
-            snapshot_count = len(self.repo.get_snapshots())
-            message = str(snapshot_count + 1)
 
         # Save to file
         try:
@@ -260,12 +299,24 @@ class MemoApp:
             messagebox.showerror("Save Error", f"Failed to save file: {e}")
             return
 
-        # Commit to repository
+        # Commit to repository (use placeholder for auto-message)
         try:
-            success, msg = self.repo.commit(message)
+            success, msg = self.repo.commit(custom_message or '_auto')
 
             if success:
-                # Update status bar to show result
+                # If auto-message, compute from parent diff and update
+                if not custom_message:
+                    last_snap = self.repo.get_last_snapshot()
+                    if last_snap.parent is not None:
+                        from memit.snapshot import Snapshot as _Snapshot
+                        parent_snap = _Snapshot.load(self.repo.memit_dir, last_snap.parent)
+                        parent_content = parent_snap.files.get('memo.txt', '')
+                    else:
+                        parent_content = ''
+                    last_snap.message = self._auto_message(parent_content, content)
+                    last_snap.save(self.repo.memit_dir)
+
+                # Update status bar
                 if "Amended" in msg:
                     self.status_label.configure(text=f"✓ {msg} (shortest edit path)")
                 else:
@@ -372,31 +423,21 @@ class MemoApp:
                     time_str = snap.timestamp
 
                 # Format entry
-                entry = f"#{snap.id}: {snap.message}"
-
-                if snap.amended and snap.amend_count > 0:
-                    entry += f" ({snap.amend_count})"
-
-                entry += f" - {time_str}"
+                entry = f"#{snap.id}: {snap.message} - {time_str}"
 
                 self.history_listbox.insert(tk.END, entry)
                 idx = self.history_listbox.size() - 1
 
                 # Determine change type and color
-                bg_color = None
-
-                if snap.amended and snap.amend_count > 0:
-                    # Amended snapshots: yellow
-                    bg_color = '#ffd966'
+                change_type = self.analyze_change_type(snap, i, snapshots)
+                if change_type == 'insert':
+                    bg_color = '#90ee90'  # Light green
+                elif change_type == 'delete':
+                    bg_color = '#ff9999'  # Light red
+                elif change_type == 'mixed':
+                    bg_color = '#b0c4de'  # Light blue
                 else:
-                    # Analyze change type
-                    change_type = self.analyze_change_type(snap, i, snapshots)
-                    if change_type == 'insert':
-                        bg_color = '#90ee90'  # Light green
-                    elif change_type == 'delete':
-                        bg_color = '#ff9999'  # Light red
-                    elif change_type == 'mixed':
-                        bg_color = '#b0c4de'  # Light blue
+                    bg_color = None
 
                 if bg_color:
                     self.history_listbox.itemconfig(idx, bg=bg_color, fg='#000000')
@@ -465,41 +506,43 @@ class MemoApp:
         # Enable restore button
         self.restore_button.configure(state="normal")
 
-        # Get content from selected snapshot
-        old_content = selected_snapshot.files.get('memo.txt', '')
+        # Compare selected snapshot against its previous snapshot
+        new_content = selected_snapshot.files.get('memo.txt', '')
 
-        # Get current content
-        new_content = self.text_editor.get('1.0', 'end-1c')
+        if idx + 1 < len(self.snapshots):
+            prev_snapshot = self.snapshots[idx + 1]
+            old_content = prev_snapshot.files.get('memo.txt', '')
+        else:
+            old_content = ''
 
         # Show diff
         self.show_diff(old_content, new_content)
 
     def show_diff(self, old_content: str, new_content: str):
         """Display colored diff in preview pane."""
-        # Clear diff text
+        self.diff_text.configure(state='normal')
         self.diff_text.delete('1.0', tk.END)
 
         if old_content == new_content:
             self.diff_text.insert('1.0', "[No differences - content is identical]")
+            self.diff_text.configure(state='disabled')
             return
 
-        # Get character-level diff
         try:
             diff_ops = get_character_diff(old_content, new_content)
 
-            # Insert diff with colors (using tags for CTkTextbox)
             for op, text in diff_ops:
                 if op == 'equal':
                     self.diff_text.insert(tk.END, text)
                 elif op == 'delete':
-                    # Show deleted text in red with strikethrough
-                    self.diff_text.insert(tk.END, f"[-{text}-]")
+                    self.diff_text.insert(tk.END, text, 'delete')
                 elif op == 'insert':
-                    # Show inserted text in green
-                    self.diff_text.insert(tk.END, f"[+{text}+]")
+                    self.diff_text.insert(tk.END, text, 'insert')
 
         except Exception as e:
             self.diff_text.insert('1.0', f"Error generating diff: {e}")
+
+        self.diff_text.configure(state='disabled')
 
     def restore_version(self):
         """Restore selected snapshot to editor."""
@@ -553,9 +596,6 @@ class MemoApp:
 
             if last_snapshot:
                 status = f"Snapshot #{last_snapshot.id}: {last_snapshot.message}"
-
-                if last_snapshot.amended and last_snapshot.amend_count > 0:
-                    status += f" ({last_snapshot.amend_count})"
 
                 if self.modified:
                     status += " | Modified ✏️"
