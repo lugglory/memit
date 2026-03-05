@@ -92,91 +92,63 @@ function initApp() {
 }
 
 // ---------------------------------------------------------------------------
-// 편집 감지 + 삭제 시 자동 커밋 (debounce)
+// 편집 감지 — 버퍼 + 트리거 기반 자동 커밋
+//
+//   버퍼(_preChangeContent): 매 input마다 갱신 (문자열 복사, 저렴)
+//   커밋 트리거:
+//     ① 삭제 감지  → 직전 버퍼 즉시 커밋 + 삭제 완료 후 debounce 커밋
+//     ② 완성 입력  → 개행(새 단락), 문장 부호(.!?。) 입력 시 즉시 커밋
+//        단, 연속 동일 문자(..  ↵↵)는 무시
+//     ③ 수동       → Ctrl+S
 // ---------------------------------------------------------------------------
 
-const AUTO_COMMIT_DELAY = 1500; // ms — 삭제 후 자동 커밋 대기
-const AUTO_SAVE_DELAY   = 3000; // ms — 일반 타이핑 후 자동 저장 대기
-let _autoCommitTimer: ReturnType<typeof setTimeout> | null = null;
-let _autoSaveTimer:   ReturnType<typeof setTimeout> | null = null;
-let _autoSaveDotTimer: ReturnType<typeof setInterval> | null = null;
-let _autoSavePending = false;
-let _preChangeContent = '';   // 마지막 커밋 시점의 내용 (삭제 직전 상태 보호용)
-let _inDeletionSeq = false;   // 연속 삭제 중 여부
+const POST_DELETION_DELAY = 1500; // ms — 삭제 완료 후 커밋 대기
 
-function scheduleAutoCommit() {
-  if (_autoCommitTimer) clearTimeout(_autoCommitTimer);
-  _autoCommitTimer = setTimeout(async () => {
-    _autoCommitTimer = null;
-    if (modified) await saveAndCommit();
-  }, AUTO_COMMIT_DELAY);
+let _preChangeContent = '';  // 버퍼: 마지막 입력 직전 내용
+let _inDeletionSeq    = false;
+let _postDeletionTimer: ReturnType<typeof setTimeout> | null = null;
+
+function schedulePostDeletionCommit() {
+  if (_postDeletionTimer) clearTimeout(_postDeletionTimer);
+  _postDeletionTimer = setTimeout(async () => {
+    _postDeletionTimer = null;
+    _inDeletionSeq = false;
+    if (modified) await saveAndCommit(undefined, true);
+  }, POST_DELETION_DELAY);
 }
 
-function cancelAutoCommit() {
-  if (_autoCommitTimer) { clearTimeout(_autoCommitTimer); _autoCommitTimer = null; }
+function cancelPostDeletionCommit() {
+  if (_postDeletionTimer) { clearTimeout(_postDeletionTimer); _postDeletionTimer = null; }
 }
 
-/** 텍스트 변경 발생 시 호출 — 대기 중이면 무시, 3초 후 자동 저장 */
-function startAutoSave() {
-  if (_autoSavePending) return;
-  _autoSavePending = true;
-  let dots = 1;
-  setStatus('저장.');
-  _autoSaveDotTimer = setInterval(() => {
-    if (dots < 3) { dots++; setStatus('저장' + '.'.repeat(dots)); }
-  }, 1000);
-  _autoSaveTimer = setTimeout(async () => {
-    clearInterval(_autoSaveDotTimer!); _autoSaveDotTimer = null;
-    _autoSaveTimer = null;
-    _autoSavePending = false;
-    if (!doc || !modified) { updateStatus(); return; }
-    const newContent = editor.value;
-    try {
-      const [success] = await doc.commit(newContent, autoMessage(newContent));
-      if (success) {
-        lastSavedContent = newContent;
-        _preChangeContent = newContent;
-        modified = false;
-        refreshHistory();
-      }
-      flashStatus('저장 완료');
-    } catch (e) {
-      flashStatus(`자동 저장 실패: ${e}`);
-    }
-  }, AUTO_SAVE_DELAY);
+/** 완성 입력 감지: 단락 개행 또는 문장 부호 (연속 동일 문자 제외) */
+function isCompletionChar(current: string, prev: string): boolean {
+  if (current.length <= prev.length) return false;
+  const last   = current[current.length - 1];
+  const second = current.length >= 2 ? current[current.length - 2] : '';
+  if (last === '\n'             && second !== '\n')   return true;
+  if ('.!?。'.includes(last)   && last   !== second) return true;
+  return false;
 }
 
-function cancelAutoSave() {
-  if (_autoSaveTimer)    { clearTimeout(_autoSaveTimer);    _autoSaveTimer = null; }
-  if (_autoSaveDotTimer) { clearInterval(_autoSaveDotTimer); _autoSaveDotTimer = null; }
-  if (_autoSavePending)  { _autoSavePending = false; updateStatus(); }
-}
-
-// input: DOM 변경 후 → 길이 비교로 "실질적 삭제" 감지
-// (backspace, delete, 선택 후 타이핑/붙여넣기/cut 모두 처리)
 editor.addEventListener('input', () => {
   const current = editor.value;
+  const prev    = _preChangeContent;
+  _preChangeContent = current;  // 버퍼 갱신 (저렴)
 
-  if (current !== lastSavedContent) {
-    modified = true;
-    if (!_autoSavePending) updateStatus();  // 저장 애니메이션 중엔 덮어쓰지 않음
-  }
+  if (current !== lastSavedContent) { modified = true; updateStatus(); }
 
-  if (current.length < _preChangeContent.length) {
-    // 내용이 줄었다 = 실질적 삭제 발생
-    cancelAutoSave();
+  if (current.length < prev.length) {
+    // 삭제 감지
     if (!_inDeletionSeq) {
       _inDeletionSeq = true;
-      if (_preChangeContent !== lastSavedContent) {
-        saveAndCommit(_preChangeContent);
-      }
+      if (prev !== lastSavedContent) saveAndCommit(prev, true);  // 직전 상태 커밋
     }
-    scheduleAutoCommit();  // 1.5초 후 삭제 후 최종 상태 커밋
+    schedulePostDeletionCommit();
   } else {
-    // 내용이 늘었거나 같다 = 타이핑·붙여넣기(순증가)
     _inDeletionSeq = false;
-    cancelAutoCommit();
-    startAutoSave();  // 텍스트 변경 → 3초 후 자동 저장
+    cancelPostDeletionCommit();
+    if (isCompletionChar(current, prev)) saveAndCommit(undefined, true);  // 완성 입력 커밋
   }
 });
 
@@ -224,14 +196,13 @@ saveFileBtn.addEventListener('click', saveToFile);
 // 커밋 → IndexedDB만
 // ---------------------------------------------------------------------------
 
-async function saveAndCommit(contentOverride?: string) {
+async function saveAndCommit(contentOverride?: string, silent = false) {
   if (!doc) return;
-  cancelAutoCommit();
-  cancelAutoSave();
+  cancelPostDeletionCommit();
   const newContent = contentOverride ?? editor.value;
 
   let message: string;
-  if (customMsgChk.checked) {
+  if (!silent && customMsgChk.checked) {
     const msg = await promptDialog('커밋 메시지를 입력하세요:', '');
     if (msg === null) return;
     message = msg.trim() || String(doc.getSnapshots().length + 1);
@@ -243,13 +214,12 @@ async function saveAndCommit(contentOverride?: string) {
     const [success, resultMsg] = await doc.commit(newContent, message);
     if (success) {
       lastSavedContent = newContent;
-      _preChangeContent = newContent;
-      modified = false;
+      modified = (editor.value !== newContent);  // contentOverride 커밋 후에도 에디터는 다를 수 있음
       const prefix = resultMsg.includes('Amended') ? '✓ Amended' : '✓ Saved';
       refreshHistory();
-      flashStatus(`${prefix}: ${resultMsg}`);
+      if (!silent) flashStatus(`${prefix}: ${resultMsg}`);
     } else {
-      flashStatus(`ℹ ${resultMsg}`);
+      if (!silent) flashStatus(`ℹ ${resultMsg}`);
     }
   } catch (e) {
     alert(`저장 실패: ${e}`);
@@ -547,7 +517,7 @@ function promptDialog(label: string, initial: string): Promise<string | null> {
 // ---------------------------------------------------------------------------
 
 function updateStatus() {
-  if (!doc || _autoSavePending) return;
+  if (!doc) return;
   const snaps = doc.getSnapshots();
   let status: string;
 
