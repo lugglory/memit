@@ -1,8 +1,10 @@
 /**
  * main.ts — Memit PWA 메인 UI
  *
- * File System Access API로 .memit 파일을 열고,
- * 편집·저장·히스토리·diff를 모두 브라우저에서 처리한다.
+ * 저장 전략:
+ *   Ctrl+S   → IndexedDB에 커밋 (빠름)
+ *   Ctrl+Shift+S / "파일에 저장" 버튼 → 실제 .memit 파일에 쓰기
+ *   탭 닫기 전 → 저장되지 않은 파일 변경이 있으면 경고
  */
 
 import './style.css';
@@ -15,10 +17,10 @@ import { getCharacterDiff } from './lib/diffEngine';
 // ---------------------------------------------------------------------------
 
 let doc: MemitDocument | null = null;
-let snapshots: MemitSnapshot[] = [];   // 최신 순 (reversed)
+let snapshots: MemitSnapshot[] = [];
 let selectedRow = -1;
 let lastSavedContent = '';
-let modified = false;
+let modified = false;         // 에디터 내용이 마지막 커밋과 다름
 
 // ---------------------------------------------------------------------------
 // DOM 참조
@@ -27,6 +29,7 @@ let modified = false;
 const statusBar    = document.getElementById('status-bar')!;
 const editor       = document.getElementById('editor') as HTMLTextAreaElement;
 const saveBtn      = document.getElementById('save-btn') as HTMLButtonElement;
+const saveFileBtn  = document.getElementById('save-file-btn') as HTMLButtonElement;
 const customMsgChk = document.getElementById('custom-msg') as HTMLInputElement;
 const exportBtn    = document.getElementById('export-btn') as HTMLButtonElement;
 const copyBtn      = document.getElementById('copy-btn') as HTMLButtonElement;
@@ -88,17 +91,23 @@ editor.addEventListener('input', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 저장 & 커밋
+// Ctrl+S → IndexedDB 커밋
+// Ctrl+Shift+S → 파일에 저장
 // ---------------------------------------------------------------------------
 
-saveBtn.addEventListener('click', saveAndCommit);
-
 document.addEventListener('keydown', e => {
-  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-    e.preventDefault();
-    saveAndCommit();
-  }
+  if (!(e.ctrlKey || e.metaKey)) return;
+  const key = e.key.toLowerCase();
+  if (key === 's' && e.shiftKey)  { e.preventDefault(); saveToFile(); }
+  else if (key === 's')           { e.preventDefault(); saveAndCommit(); }
 });
+
+saveBtn.addEventListener('click', saveAndCommit);
+saveFileBtn.addEventListener('click', saveToFile);
+
+// ---------------------------------------------------------------------------
+// 커밋 → IndexedDB만
+// ---------------------------------------------------------------------------
 
 async function saveAndCommit() {
   if (!doc) return;
@@ -119,16 +128,44 @@ async function saveAndCommit() {
       lastSavedContent = newContent;
       modified = false;
       const prefix = resultMsg.includes('Amended') ? '✓ Amended' : '✓ Saved';
-      setStatus(`${prefix}: ${resultMsg}`);
       refreshHistory();
-      updateStatus();
+      flashStatus(`${prefix}: ${resultMsg}`);
     } else {
-      setStatus(`ℹ ${resultMsg}`);
+      flashStatus(`ℹ ${resultMsg}`);
     }
   } catch (e) {
     alert(`저장 실패: ${e}`);
   }
 }
+
+// ---------------------------------------------------------------------------
+// 파일에 저장 → 실제 .memit 파일 쓰기
+// ---------------------------------------------------------------------------
+
+async function saveToFile() {
+  if (!doc) return;
+  try {
+    await doc.saveToFile();
+    flashStatus(`✓ 파일에 저장됨: ${doc.fileName}`);
+  } catch (e) {
+    if ((e as Error).name !== 'AbortError') alert(`파일 저장 실패: ${e}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 탭/창 닫기 전 경고
+// ---------------------------------------------------------------------------
+
+window.addEventListener('beforeunload', e => {
+  if (doc?.dirtyToFile) {
+    e.preventDefault();
+    e.returnValue = '파일에 저장되지 않은 변경사항이 있습니다. 닫으시겠습니까?';
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 자동 커밋 메시지 생성
+// ---------------------------------------------------------------------------
 
 function autoMessage(newContent: string): string {
   if (!doc) return '';
@@ -137,7 +174,7 @@ function autoMessage(newContent: string): string {
 
   if (snaps.length >= 2) {
     const secondLast = snaps.at(-2)!;
-    const last = snaps.at(-1)!;
+    const last       = snaps.at(-1)!;
     const { isSafe } = checkAmendSafe(
       { memo: secondLast.content },
       { memo: last.content },
@@ -167,14 +204,14 @@ function autoMessage(newContent: string): string {
 
 copyBtn.addEventListener('click', () => {
   navigator.clipboard.writeText(editor.value);
-  setStatus('✓ 클립보드에 복사됨');
+  flashStatus('✓ 클립보드에 복사됨');
 });
 
 exportBtn.addEventListener('click', async () => {
   if (!doc) return;
   try {
     await doc.exportTxt();
-    setStatus('✓ TXT 저장됨');
+    flashStatus('✓ TXT 저장됨');
   } catch (e) {
     if ((e as Error).name !== 'AbortError') alert(`저장 실패: ${e}`);
   }
@@ -243,12 +280,9 @@ function getChangeType(snap: MemitSnapshot, index: number): 'insert' | 'delete' 
 }
 
 function selectRow(row: number) {
-  // 이전 선택 해제
   historyList.querySelectorAll('li.selected').forEach(el => el.classList.remove('selected'));
-
   selectedRow = row;
-  const li = historyList.querySelector<HTMLLIElement>(`li[data-row="${row}"]`);
-  li?.classList.add('selected');
+  historyList.querySelector<HTMLLIElement>(`li[data-row="${row}"]`)?.classList.add('selected');
   restoreBtn.disabled = false;
 
   const snap = snapshots[row];
@@ -296,11 +330,11 @@ restoreBtn.addEventListener('click', async () => {
   lastSavedContent = '';
   modified = true;
   updateStatus();
-  alert(`Snapshot #${snap.id}이 에디터에 복원되었습니다.\n저장하려면 Save & Commit 버튼을 누르세요.`);
+  alert(`Snapshot #${snap.id}이 에디터에 복원되었습니다.\n저장하려면 Save 버튼을 누르세요.`);
 });
 
 // ---------------------------------------------------------------------------
-// 컨텍스트 메뉴 (우클릭 → 커밋 메시지 수정)
+// 컨텍스트 메뉴
 // ---------------------------------------------------------------------------
 
 let ctxRow = -1;
@@ -317,23 +351,19 @@ ctxEdit.addEventListener('click', async () => {
   hideCtxMenu();
   if (ctxRow < 0 || ctxRow >= snapshots.length || !doc) return;
   const snap = snapshots[ctxRow];
-  const newMsg = await promptDialog(
-    `Snapshot #${snap.id}의 메시지를 수정:`,
-    snap.message
-  );
+  const newMsg = await promptDialog(`Snapshot #${snap.id}의 메시지를 수정:`, snap.message);
   if (newMsg === null || !newMsg.trim() || newMsg.trim() === snap.message) return;
   await doc.updateMessage(snap.id, newMsg.trim());
   setStatus(`✓ Snapshot #${snap.id} 메시지 수정됨`);
   refreshHistory();
 });
 
-document.addEventListener('click', () => hideCtxMenu());
+document.addEventListener('click',   () => hideCtxMenu());
 document.addEventListener('keydown', e => { if (e.key === 'Escape') hideCtxMenu(); });
-
 function hideCtxMenu() { ctxMenu.style.display = 'none'; }
 
 // ---------------------------------------------------------------------------
-// 커스텀 다이얼로그 (prompt 대체 — IME 안전)
+// 커스텀 다이얼로그
 // ---------------------------------------------------------------------------
 
 function promptDialog(label: string, initial: string): Promise<string | null> {
@@ -348,7 +378,7 @@ function promptDialog(label: string, initial: string): Promise<string | null> {
     p.textContent = label;
 
     const input = document.createElement('input');
-    input.type = 'text';
+    input.type  = 'text';
     input.value = initial;
 
     const actions = document.createElement('div');
@@ -358,7 +388,7 @@ function promptDialog(label: string, initial: string): Promise<string | null> {
     cancelBtn.textContent = '취소';
     const okBtn = document.createElement('button');
     okBtn.textContent = '확인';
-    okBtn.style.background = 'var(--accent)';
+    okBtn.style.background = '#1f538d';
 
     actions.appendChild(cancelBtn);
     actions.appendChild(okBtn);
@@ -374,11 +404,10 @@ function promptDialog(label: string, initial: string): Promise<string | null> {
     };
 
     setTimeout(() => { input.focus(); input.select(); }, 0);
-
-    okBtn.addEventListener('click', () => finish(input.value));
+    okBtn.addEventListener('click',     () => finish(input.value));
     cancelBtn.addEventListener('click', () => finish(null));
     input.addEventListener('keydown', e => {
-      if (e.key === 'Enter') finish(input.value);
+      if (e.key === 'Enter')  finish(input.value);
       if (e.key === 'Escape') finish(null);
     });
     overlay.addEventListener('click', e => { if (e.target === overlay) finish(null); });
@@ -393,21 +422,35 @@ function updateStatus() {
   if (!doc) return;
   const snaps = doc.getSnapshots();
   let status: string;
+
   if (snaps.length > 0) {
     const last = snaps.at(-1)!;
     status = `Snapshot #${last.id}: ${last.message}`;
-    status += modified ? ' | Modified ✏️' : ' | Clean ✓';
+    status += modified ? ' | ✏️ 수정중' : ' | ✓';
   } else {
-    status = 'No snapshots yet';
-    if (modified) status += ' | Modified ✏️';
+    status = modified ? '✏️ 수정중 (스냅샷 없음)' : 'No snapshots yet';
   }
+
+  // 파일 저장 상태 표시
+  status += doc.dirtyToFile ? ' | 💾 파일 미저장' : ' | 📁 파일 저장됨';
   setStatus(`Status: ${status}`);
+
+  // 파일 저장 버튼 강조
+  saveFileBtn.style.borderColor = doc.dirtyToFile ? '#f0a500' : '';
 }
 
 function setStatus(text: string) { statusBar.textContent = text; }
 
+let _flashTimer: ReturnType<typeof setTimeout> | null = null;
+/** 2초간 메시지를 보여준 뒤 상태 표시로 복귀 */
+function flashStatus(text: string) {
+  if (_flashTimer) clearTimeout(_flashTimer);
+  setStatus(text);
+  _flashTimer = setTimeout(() => { updateStatus(); _flashTimer = null; }, 2000);
+}
+
 // ---------------------------------------------------------------------------
-// 드래그로 패널 너비 조절
+// 드래그 패널 너비 조절
 // ---------------------------------------------------------------------------
 
 const dragHandle  = document.getElementById('drag-handle')!;
@@ -416,7 +459,7 @@ const histPanel   = document.getElementById('history-panel')!;
 
 dragHandle.addEventListener('mousedown', e => {
   e.preventDefault();
-  const startX = e.clientX;
+  const startX  = e.clientX;
   const startEW = editorPanel.getBoundingClientRect().width;
   const startHW = histPanel.getBoundingClientRect().width;
   const total   = startEW + startHW;
@@ -424,10 +467,10 @@ dragHandle.addEventListener('mousedown', e => {
   const onMove = (ev: MouseEvent) => {
     const delta = ev.clientX - startX;
     const newEW = Math.max(200, Math.min(total - 200, startEW + delta));
-    editorPanel.style.flex = 'none';
+    editorPanel.style.flex  = 'none';
     editorPanel.style.width = `${newEW}px`;
-    histPanel.style.flex = 'none';
-    histPanel.style.width = `${total - newEW}px`;
+    histPanel.style.flex    = 'none';
+    histPanel.style.width   = `${total - newEW}px`;
   };
   const onUp = () => {
     document.removeEventListener('mousemove', onMove);
@@ -446,7 +489,7 @@ if ('serviceWorker' in navigator) {
 }
 
 // ---------------------------------------------------------------------------
-// 랜딩 버튼 바인딩
+// 랜딩 버튼
 // ---------------------------------------------------------------------------
 
 document.getElementById('btn-open')!.addEventListener('click', async () => {
@@ -458,4 +501,3 @@ document.getElementById('btn-new')!.addEventListener('click', async () => {
   try { await newFile(); }
   catch (e) { if ((e as Error).name !== 'AbortError') alert(`파일 만들기 실패: ${e}`); }
 });
-

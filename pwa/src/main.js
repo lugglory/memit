@@ -1,8 +1,10 @@
 /**
  * main.ts — Memit PWA 메인 UI
  *
- * File System Access API로 .memit 파일을 열고,
- * 편집·저장·히스토리·diff를 모두 브라우저에서 처리한다.
+ * 저장 전략:
+ *   Ctrl+S   → IndexedDB에 커밋 (빠름)
+ *   Ctrl+Shift+S / "파일에 저장" 버튼 → 실제 .memit 파일에 쓰기
+ *   탭 닫기 전 → 저장되지 않은 파일 변경이 있으면 경고
  */
 import './style.css';
 import { MemitDocument } from './lib/document';
@@ -12,16 +14,17 @@ import { getCharacterDiff } from './lib/diffEngine';
 // 상태
 // ---------------------------------------------------------------------------
 let doc = null;
-let snapshots = []; // 최신 순 (reversed)
+let snapshots = [];
 let selectedRow = -1;
 let lastSavedContent = '';
-let modified = false;
+let modified = false; // 에디터 내용이 마지막 커밋과 다름
 // ---------------------------------------------------------------------------
 // DOM 참조
 // ---------------------------------------------------------------------------
 const statusBar = document.getElementById('status-bar');
 const editor = document.getElementById('editor');
 const saveBtn = document.getElementById('save-btn');
+const saveFileBtn = document.getElementById('save-file-btn');
 const customMsgChk = document.getElementById('custom-msg');
 const exportBtn = document.getElementById('export-btn');
 const copyBtn = document.getElementById('copy-btn');
@@ -74,15 +77,27 @@ editor.addEventListener('input', () => {
     }
 });
 // ---------------------------------------------------------------------------
-// 저장 & 커밋
+// Ctrl+S → IndexedDB 커밋
+// Ctrl+Shift+S → 파일에 저장
 // ---------------------------------------------------------------------------
-saveBtn.addEventListener('click', saveAndCommit);
 document.addEventListener('keydown', e => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+    if (!(e.ctrlKey || e.metaKey))
+        return;
+    const key = e.key.toLowerCase();
+    if (key === 's' && e.shiftKey) {
+        e.preventDefault();
+        saveToFile();
+    }
+    else if (key === 's') {
         e.preventDefault();
         saveAndCommit();
     }
 });
+saveBtn.addEventListener('click', saveAndCommit);
+saveFileBtn.addEventListener('click', saveToFile);
+// ---------------------------------------------------------------------------
+// 커밋 → IndexedDB만
+// ---------------------------------------------------------------------------
 async function saveAndCommit() {
     if (!doc)
         return;
@@ -103,18 +118,44 @@ async function saveAndCommit() {
             lastSavedContent = newContent;
             modified = false;
             const prefix = resultMsg.includes('Amended') ? '✓ Amended' : '✓ Saved';
-            setStatus(`${prefix}: ${resultMsg}`);
             refreshHistory();
-            updateStatus();
+            flashStatus(`${prefix}: ${resultMsg}`);
         }
         else {
-            setStatus(`ℹ ${resultMsg}`);
+            flashStatus(`ℹ ${resultMsg}`);
         }
     }
     catch (e) {
         alert(`저장 실패: ${e}`);
     }
 }
+// ---------------------------------------------------------------------------
+// 파일에 저장 → 실제 .memit 파일 쓰기
+// ---------------------------------------------------------------------------
+async function saveToFile() {
+    if (!doc)
+        return;
+    try {
+        await doc.saveToFile();
+        flashStatus(`✓ 파일에 저장됨: ${doc.fileName}`);
+    }
+    catch (e) {
+        if (e.name !== 'AbortError')
+            alert(`파일 저장 실패: ${e}`);
+    }
+}
+// ---------------------------------------------------------------------------
+// 탭/창 닫기 전 경고
+// ---------------------------------------------------------------------------
+window.addEventListener('beforeunload', e => {
+    if (doc?.dirtyToFile) {
+        e.preventDefault();
+        e.returnValue = '파일에 저장되지 않은 변경사항이 있습니다. 닫으시겠습니까?';
+    }
+});
+// ---------------------------------------------------------------------------
+// 자동 커밋 메시지 생성
+// ---------------------------------------------------------------------------
 function autoMessage(newContent) {
     if (!doc)
         return '';
@@ -148,14 +189,14 @@ function autoMessage(newContent) {
 // ---------------------------------------------------------------------------
 copyBtn.addEventListener('click', () => {
     navigator.clipboard.writeText(editor.value);
-    setStatus('✓ 클립보드에 복사됨');
+    flashStatus('✓ 클립보드에 복사됨');
 });
 exportBtn.addEventListener('click', async () => {
     if (!doc)
         return;
     try {
         await doc.exportTxt();
-        setStatus('✓ TXT 저장됨');
+        flashStatus('✓ TXT 저장됨');
     }
     catch (e) {
         if (e.name !== 'AbortError')
@@ -227,11 +268,9 @@ function getChangeType(snap, index) {
     }
 }
 function selectRow(row) {
-    // 이전 선택 해제
     historyList.querySelectorAll('li.selected').forEach(el => el.classList.remove('selected'));
     selectedRow = row;
-    const li = historyList.querySelector(`li[data-row="${row}"]`);
-    li?.classList.add('selected');
+    historyList.querySelector(`li[data-row="${row}"]`)?.classList.add('selected');
     restoreBtn.disabled = false;
     const snap = snapshots[row];
     const oldContent = row + 1 < snapshots.length ? snapshots[row + 1].content : '';
@@ -277,10 +316,10 @@ restoreBtn.addEventListener('click', async () => {
     lastSavedContent = '';
     modified = true;
     updateStatus();
-    alert(`Snapshot #${snap.id}이 에디터에 복원되었습니다.\n저장하려면 Save & Commit 버튼을 누르세요.`);
+    alert(`Snapshot #${snap.id}이 에디터에 복원되었습니다.\n저장하려면 Save 버튼을 누르세요.`);
 });
 // ---------------------------------------------------------------------------
-// 컨텍스트 메뉴 (우클릭 → 커밋 메시지 수정)
+// 컨텍스트 메뉴
 // ---------------------------------------------------------------------------
 let ctxRow = -1;
 function showCtxMenu(e, row) {
@@ -307,7 +346,7 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape')
     hideCtxMenu(); });
 function hideCtxMenu() { ctxMenu.style.display = 'none'; }
 // ---------------------------------------------------------------------------
-// 커스텀 다이얼로그 (prompt 대체 — IME 안전)
+// 커스텀 다이얼로그
 // ---------------------------------------------------------------------------
 function promptDialog(label, initial) {
     return new Promise(resolve => {
@@ -326,7 +365,7 @@ function promptDialog(label, initial) {
         cancelBtn.textContent = '취소';
         const okBtn = document.createElement('button');
         okBtn.textContent = '확인';
-        okBtn.style.background = 'var(--accent)';
+        okBtn.style.background = '#1f538d';
         actions.appendChild(cancelBtn);
         actions.appendChild(okBtn);
         box.appendChild(p);
@@ -362,18 +401,28 @@ function updateStatus() {
     if (snaps.length > 0) {
         const last = snaps.at(-1);
         status = `Snapshot #${last.id}: ${last.message}`;
-        status += modified ? ' | Modified ✏️' : ' | Clean ✓';
+        status += modified ? ' | ✏️ 수정중' : ' | ✓';
     }
     else {
-        status = 'No snapshots yet';
-        if (modified)
-            status += ' | Modified ✏️';
+        status = modified ? '✏️ 수정중 (스냅샷 없음)' : 'No snapshots yet';
     }
+    // 파일 저장 상태 표시
+    status += doc.dirtyToFile ? ' | 💾 파일 미저장' : ' | 📁 파일 저장됨';
     setStatus(`Status: ${status}`);
+    // 파일 저장 버튼 강조
+    saveFileBtn.style.borderColor = doc.dirtyToFile ? '#f0a500' : '';
 }
 function setStatus(text) { statusBar.textContent = text; }
+let _flashTimer = null;
+/** 2초간 메시지를 보여준 뒤 상태 표시로 복귀 */
+function flashStatus(text) {
+    if (_flashTimer)
+        clearTimeout(_flashTimer);
+    setStatus(text);
+    _flashTimer = setTimeout(() => { updateStatus(); _flashTimer = null; }, 2000);
+}
 // ---------------------------------------------------------------------------
-// 드래그로 패널 너비 조절
+// 드래그 패널 너비 조절
 // ---------------------------------------------------------------------------
 const dragHandle = document.getElementById('drag-handle');
 const editorPanel = document.getElementById('editor-panel');
@@ -406,7 +455,7 @@ if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js');
 }
 // ---------------------------------------------------------------------------
-// 랜딩 버튼 바인딩
+// 랜딩 버튼
 // ---------------------------------------------------------------------------
 document.getElementById('btn-open').addEventListener('click', async () => {
     try {
