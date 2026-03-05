@@ -21,18 +21,24 @@ let modified = false; // 에디터 내용이 마지막 커밋과 다름
 // ---------------------------------------------------------------------------
 // DOM 참조
 // ---------------------------------------------------------------------------
-const statusBar = document.getElementById('status-bar');
-const editor = document.getElementById('editor');
-const saveBtn = document.getElementById('save-btn');
-const saveFileBtn = document.getElementById('save-file-btn');
-const customMsgChk = document.getElementById('custom-msg');
-const exportBtn = document.getElementById('export-btn');
-const copyBtn = document.getElementById('copy-btn');
-const historyList = document.getElementById('history-list');
-const diffView = document.getElementById('diff-view');
-const restoreBtn = document.getElementById('restore-btn');
-const ctxMenu = document.getElementById('ctx-menu');
-const ctxEdit = document.getElementById('ctx-edit');
+function el(id) {
+    const e = document.getElementById(id);
+    if (!e)
+        throw new Error(`Element #${id} not found. Try a hard refresh (Ctrl+Shift+R).`);
+    return e;
+}
+const statusBar = el('status-bar');
+const editor = el('editor');
+const saveBtn = el('save-btn');
+const saveFileBtn = el('save-file-btn');
+const customMsgChk = el('custom-msg');
+const exportBtn = el('export-btn');
+const copyBtn = el('copy-btn');
+const historyList = el('history-list');
+const diffView = el('diff-view');
+const restoreBtn = el('restore-btn');
+const ctxMenu = el('ctx-menu');
+const ctxEdit = el('ctx-edit');
 // ---------------------------------------------------------------------------
 // 파일 열기 / 만들기
 // ---------------------------------------------------------------------------

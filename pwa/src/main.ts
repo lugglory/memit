@@ -26,18 +26,24 @@ let modified = false;         // 에디터 내용이 마지막 커밋과 다름
 // DOM 참조
 // ---------------------------------------------------------------------------
 
-const statusBar    = document.getElementById('status-bar')!;
-const editor       = document.getElementById('editor') as HTMLTextAreaElement;
-const saveBtn      = document.getElementById('save-btn') as HTMLButtonElement;
-const saveFileBtn  = document.getElementById('save-file-btn') as HTMLButtonElement;
-const customMsgChk = document.getElementById('custom-msg') as HTMLInputElement;
-const exportBtn    = document.getElementById('export-btn') as HTMLButtonElement;
-const copyBtn      = document.getElementById('copy-btn') as HTMLButtonElement;
-const historyList  = document.getElementById('history-list') as HTMLUListElement;
-const diffView     = document.getElementById('diff-view') as HTMLDivElement;
-const restoreBtn   = document.getElementById('restore-btn') as HTMLButtonElement;
-const ctxMenu      = document.getElementById('ctx-menu') as HTMLDivElement;
-const ctxEdit      = document.getElementById('ctx-edit') as HTMLDivElement;
+function el<T extends HTMLElement>(id: string): T {
+  const e = document.getElementById(id) as T | null;
+  if (!e) throw new Error(`Element #${id} not found. Try a hard refresh (Ctrl+Shift+R).`);
+  return e;
+}
+
+const statusBar    = el('status-bar');
+const editor       = el<HTMLTextAreaElement>('editor');
+const saveBtn      = el<HTMLButtonElement>('save-btn');
+const saveFileBtn  = el<HTMLButtonElement>('save-file-btn');
+const customMsgChk = el<HTMLInputElement>('custom-msg');
+const exportBtn    = el<HTMLButtonElement>('export-btn');
+const copyBtn      = el<HTMLButtonElement>('copy-btn');
+const historyList  = el<HTMLUListElement>('history-list');
+const diffView     = el<HTMLDivElement>('diff-view');
+const restoreBtn   = el<HTMLButtonElement>('restore-btn');
+const ctxMenu      = el<HTMLDivElement>('ctx-menu');
+const ctxEdit      = el<HTMLDivElement>('ctx-edit');
 
 // ---------------------------------------------------------------------------
 // 파일 열기 / 만들기
