@@ -27,13 +27,13 @@ if not exist "venv\Scripts\activate.bat" (
 :: 가상환경 활성화
 call venv\Scripts\activate.bat
 
-:: customtkinter 설치 여부 확인 후 설치
-python -c "import customtkinter" >nul 2>&1
+:: PySide6 설치 여부 확인 후 설치
+python -c "import PySide6" >nul 2>&1
 if errorlevel 1 (
-    echo [설치] customtkinter 설치 중...
-    pip install customtkinter
+    echo [설치] PySide6 설치 중...
+    pip install PySide6
     if errorlevel 1 (
-        echo [오류] customtkinter 설치에 실패했습니다.
+        echo [오류] PySide6 설치에 실패했습니다.
         pause
         exit /b 1
     )

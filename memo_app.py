@@ -9,385 +9,366 @@ Run without arguments to show the Open/New file dialog.
 """
 
 import sys
-import ctypes
-import ctypes.wintypes
-import tkinter as tk
 from pathlib import Path
 from datetime import datetime
-from tkinter import filedialog, messagebox
 from typing import List, Optional
 
-
-# ---------------------------------------------------------------------------
-# Windows IME 조합 폰트 직접 설정
-# tkinter가 ImmSetCompositionFont를 잘못 처리해 조합 문자가 작게(윗첨자처럼)
-# 보이는 문제를 Win32 API로 직접 보완한다.
-# ---------------------------------------------------------------------------
-
-def _build_logfontw(family: str, size_pt: int, hwnd: int):
-    class LOGFONTW(ctypes.Structure):
-        _fields_ = [
-            ('lfHeight',         ctypes.c_long),
-            ('lfWidth',          ctypes.c_long),
-            ('lfEscapement',     ctypes.c_long),
-            ('lfOrientation',    ctypes.c_long),
-            ('lfWeight',         ctypes.c_long),
-            ('lfItalic',         ctypes.c_byte),
-            ('lfUnderline',      ctypes.c_byte),
-            ('lfStrikeOut',      ctypes.c_byte),
-            ('lfCharSet',        ctypes.c_byte),
-            ('lfOutPrecision',   ctypes.c_byte),
-            ('lfClipPrecision',  ctypes.c_byte),
-            ('lfQuality',        ctypes.c_byte),
-            ('lfPitchAndFamily', ctypes.c_byte),
-            ('lfFaceName',       ctypes.c_wchar * 32),
-        ]
-    try:
-        dpi = ctypes.windll.user32.GetDpiForWindow(hwnd)
-    except Exception:
-        dpi = 96
-    lf = LOGFONTW()
-    lf.lfHeight = -int(size_pt * dpi / 72)  # 음수 = 픽셀 높이
-    lf.lfWeight = 400   # FW_NORMAL
-    lf.lfCharSet = 129  # HANGUL_CHARSET
-    lf.lfFaceName = family
-    return lf
-
-
-def fix_ime_font(widget: tk.Text, family: str, size_pt: int):
-    """포커스를 받을 때마다 IME 조합 폰트를 강제 설정한다."""
-    if sys.platform != 'win32':
-        return
-    try:
-        hwnd = widget.winfo_id()
-        imm32 = ctypes.windll.imm32
-        himc = imm32.ImmGetContext(hwnd)
-        if not himc:
-            return
-        lf = _build_logfontw(family, size_pt, hwnd)
-        imm32.ImmSetCompositionFontW(himc, ctypes.byref(lf))
-        imm32.ImmReleaseContext(hwnd, himc)
-    except Exception:
-        pass
-
-import customtkinter as ctk
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QSplitter, QTextEdit, QListWidget, QListWidgetItem, QPushButton,
+    QLabel, QCheckBox, QDialog, QLineEdit, QDialogButtonBox,
+    QFileDialog, QMessageBox, QFrame, QMenu,
+)
+from PySide6.QtCore import Qt, QSize
+from PySide6.QtGui import (
+    QFont, QColor, QTextCharFormat, QKeySequence, QAction, QTextCursor,
+)
 
 from memit.document import MemitDocument, MemitSnapshot
 from memit.amend_check import check_amend_safe
 from memit.diff_engine import get_character_diff
 
 
-# Appearance
-ctk.set_appearance_mode("dark")
-ctk.set_default_color_theme("blue")
+# ---------------------------------------------------------------------------
+# Dark theme
+# ---------------------------------------------------------------------------
+
+_DARK_BG    = "#1e1e1e"
+_PANEL_BG   = "#252526"
+_WIDGET_BG  = "#2b2b2b"
+_TEXT_FG    = "#d4d4d4"
+_ACCENT     = "#1f538d"
+_BORDER     = "#3e3e42"
+
+_STYLESHEET = f"""
+QMainWindow, QWidget {{
+    background-color: {_DARK_BG};
+    color: {_TEXT_FG};
+}}
+QTextEdit {{
+    background-color: {_DARK_BG};
+    color: {_TEXT_FG};
+    border: 1px solid {_BORDER};
+    selection-background-color: {_ACCENT};
+    selection-color: #ffffff;
+}}
+QListWidget {{
+    background-color: {_WIDGET_BG};
+    color: {_TEXT_FG};
+    border: 1px solid {_BORDER};
+    outline: none;
+}}
+QListWidget::item {{
+    padding: 3px 6px;
+}}
+QListWidget::item:selected {{
+    background-color: {_ACCENT};
+    color: #ffffff;
+}}
+QPushButton {{
+    background-color: #3a3d41;
+    color: {_TEXT_FG};
+    border: 1px solid {_BORDER};
+    padding: 5px 14px;
+    border-radius: 4px;
+    min-height: 28px;
+}}
+QPushButton:hover {{
+    background-color: #4a4d51;
+}}
+QPushButton:pressed {{
+    background-color: {_ACCENT};
+}}
+QPushButton:disabled {{
+    color: #555;
+    background-color: #2a2a2a;
+    border-color: #333;
+}}
+QLabel {{
+    color: {_TEXT_FG};
+    background: transparent;
+}}
+QCheckBox {{
+    color: {_TEXT_FG};
+    spacing: 6px;
+}}
+QCheckBox::indicator {{
+    width: 14px;
+    height: 14px;
+    border: 1px solid {_BORDER};
+    background: {_WIDGET_BG};
+    border-radius: 2px;
+}}
+QCheckBox::indicator:checked {{
+    background: {_ACCENT};
+}}
+QLineEdit {{
+    background-color: {_WIDGET_BG};
+    color: {_TEXT_FG};
+    border: 1px solid {_BORDER};
+    padding: 5px 8px;
+    border-radius: 3px;
+    selection-background-color: {_ACCENT};
+}}
+QSplitter::handle {{
+    background-color: {_BORDER};
+    width: 2px;
+    height: 2px;
+}}
+QScrollBar:vertical {{
+    background: {_WIDGET_BG};
+    width: 12px;
+    margin: 0;
+}}
+QScrollBar::handle:vertical {{
+    background: #5a5a5a;
+    border-radius: 6px;
+    min-height: 24px;
+    margin: 2px;
+}}
+QScrollBar::handle:vertical:hover {{
+    background: #7a7a7a;
+}}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+    height: 0;
+}}
+QScrollBar:horizontal {{
+    background: {_WIDGET_BG};
+    height: 12px;
+    margin: 0;
+}}
+QScrollBar::handle:horizontal {{
+    background: #5a5a5a;
+    border-radius: 6px;
+    min-width: 24px;
+    margin: 2px;
+}}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+    width: 0;
+}}
+QMenu {{
+    background-color: {_PANEL_BG};
+    color: {_TEXT_FG};
+    border: 1px solid {_BORDER};
+    padding: 4px 0;
+}}
+QMenu::item {{
+    padding: 5px 20px;
+}}
+QMenu::item:selected {{
+    background-color: {_ACCENT};
+}}
+QFrame[frameShape="4"],
+QFrame[frameShape="5"] {{
+    color: {_BORDER};
+}}
+QDialog {{
+    background-color: {_PANEL_BG};
+}}
+QDialogButtonBox QPushButton {{
+    min-width: 80px;
+}}
+"""
 
 
 # ---------------------------------------------------------------------------
-# Startup file chooser (shown when no CLI argument is given)
+# Startup file chooser
 # ---------------------------------------------------------------------------
 
-def _ask_file_path() -> Optional[Path]:
-    """
-    Show a startup dialog asking the user to open or create a .memit file.
-    Returns the chosen Path, or None if the user cancelled.
-    """
-    temp = tk.Tk()
-    temp.withdraw()
+class _FileChooserDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Memit Memo")
+        self.setFixedSize(320, 130)
+        self.result_path: Optional[Path] = None
 
-    result: dict = {"path": None, "done": False}
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
 
-    dialog = tk.Toplevel(temp)
-    dialog.title("Memit Memo")
-    dialog.resizable(False, False)
-    dialog.grab_set()
+        label = QLabel("메모 파일을 선택하세요")
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setStyleSheet("font-size: 12px; padding-top: 8px;")
+        layout.addWidget(label)
 
-    # Center on screen
-    dialog.update_idletasks()
-    w, h = 320, 130
-    sw, sh = dialog.winfo_screenwidth(), dialog.winfo_screenheight()
-    dialog.geometry(f"{w}x{h}+{(sw - w)//2}+{(sh - h)//2}")
+        btn_layout = QHBoxLayout()
+        open_btn = QPushButton("파일 열기")
+        new_btn  = QPushButton("새로 만들기")
+        btn_layout.addWidget(open_btn)
+        btn_layout.addWidget(new_btn)
+        layout.addLayout(btn_layout)
 
-    tk.Label(dialog, text="메모 파일을 선택하세요", font=("Segoe UI", 11),
-             pady=5).pack(pady=(18, 10))
+        open_btn.clicked.connect(self._open_file)
+        new_btn.clicked.connect(self._new_file)
 
-    btn_frame = tk.Frame(dialog)
-    btn_frame.pack()
-
-    def open_file():
-        path = filedialog.askopenfilename(
-            parent=dialog,
-            title="메모 파일 열기",
-            filetypes=[("Memit 파일", "*.memit"), ("모든 파일", "*.*")],
+    def _open_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "메모 파일 열기", "",
+            "Memit 파일 (*.memit);;모든 파일 (*.*)",
         )
         if path:
-            result["path"] = Path(path)
-        result["done"] = True
-        dialog.destroy()
+            self.result_path = Path(path)
+        self.accept()
 
-    def new_file():
-        path = filedialog.asksaveasfilename(
-            parent=dialog,
-            title="새 메모 파일 만들기",
-            defaultextension=".memit",
-            filetypes=[("Memit 파일", "*.memit")],
+    def _new_file(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "새 메모 파일 만들기", "",
+            "Memit 파일 (*.memit)",
         )
         if path:
-            result["path"] = Path(path)
-        result["done"] = True
-        dialog.destroy()
-
-    def on_close():
-        result["done"] = True
-        dialog.destroy()
-
-    tk.Button(btn_frame, text="파일 열기", command=open_file,
-              width=12, pady=4).pack(side="left", padx=8)
-    tk.Button(btn_frame, text="새로 만들기", command=new_file,
-              width=12, pady=4).pack(side="left", padx=8)
-
-    dialog.protocol("WM_DELETE_WINDOW", on_close)
-    dialog.wait_window()
-    temp.destroy()
-    return result["path"]
+            self.result_path = Path(path)
+        self.accept()
 
 
 # ---------------------------------------------------------------------------
 # Main application
 # ---------------------------------------------------------------------------
 
-class MemoApp:
-    """Main application window for Memit Memo."""
-
-    def __init__(self, root: ctk.CTk, doc: MemitDocument):
-        self.root = root
+class MemoApp(QMainWindow):
+    def __init__(self, doc: MemitDocument):
+        super().__init__()
         self.doc = doc
-
-        self.root.title(f"{doc.path.name} - Memit Memo")
-
-        # Window size: 75% of screen
-        self.root.update_idletasks()
-        sw = self.root.winfo_screenwidth()
-        sh = self.root.winfo_screenheight()
-        w = int(sw * 0.75)
-        h = int(sh * 0.75)
-        self.root.geometry(f"{w}x{h}+{(sw - w)//2}+{(sh - h)//2}")
-
         self.modified = False
         self.last_saved_content = ""
+        self.snapshots: List[MemitSnapshot] = []
 
-        self.setup_ui()
+        self.setWindowTitle(f"{doc.path.name} - Memit Memo")
+
+        screen = QApplication.primaryScreen().availableGeometry()
+        w = int(screen.width() * 0.75)
+        h = int(screen.height() * 0.75)
+        self.resize(w, h)
+        self.move(screen.x() + (screen.width() - w) // 2,
+                  screen.y() + (screen.height() - h) // 2)
+
+        self._setup_ui()
+        self._setup_shortcuts()
         self.load_content()
         self.refresh_history()
         self.update_status()
-
-        self.root.bind('<Control-s>', lambda e: self.save_and_commit())
 
     # ------------------------------------------------------------------
     # UI setup
     # ------------------------------------------------------------------
 
-    def setup_ui(self):
-        self.root.grid_rowconfigure(1, weight=1)
-        self.root.grid_columnconfigure(0, weight=1)
+    def _setup_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(6)
 
-        self.status_label = ctk.CTkLabel(
-            self.root,
-            text="Status: No snapshots yet",
-            anchor="w",
-            height=30,
-            fg_color=("gray85", "gray20"),
-            corner_radius=6,
+        self.status_label = QLabel("Status: No snapshots yet")
+        self.status_label.setStyleSheet(
+            f"background: {_PANEL_BG}; padding: 5px 10px; "
+            f"border: 1px solid {_BORDER}; border-radius: 4px;"
         )
-        self.status_label.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="ew")
+        root.addWidget(self.status_label)
 
-        self.main_frame = ctk.CTkFrame(self.root)
-        self.main_frame.grid(row=1, column=0, padx=10, pady=(5, 10), sticky="nsew")
-        self.main_frame.grid_rowconfigure(0, weight=1)
-        self.main_frame.grid_columnconfigure(0, weight=6)
-        self.main_frame.grid_columnconfigure(1, weight=4)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        splitter.addWidget(self._make_editor_panel())
+        splitter.addWidget(self._make_history_panel())
+        splitter.setStretchFactor(0, 6)
+        splitter.setStretchFactor(1, 4)
+        root.addWidget(splitter, 1)
 
-        self.setup_editor_panel()
-        self.setup_history_panel()
+    def _make_editor_panel(self) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 4, 0)
+        layout.setSpacing(6)
 
-    def setup_editor_panel(self):
-        self.editor_frame = ctk.CTkFrame(self.main_frame)
-        self.editor_frame.grid(row=0, column=0, padx=(10, 5), pady=10, sticky="nsew")
-        self.editor_frame.grid_rowconfigure(1, weight=1)
-        self.editor_frame.grid_columnconfigure(0, weight=1)
+        title = QLabel("MEMO EDITOR")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("font-weight: bold; font-size: 13px; padding: 4px;")
+        layout.addWidget(title)
 
-        ctk.CTkLabel(
-            self.editor_frame,
-            text="MEMO EDITOR",
-            font=ctk.CTkFont(size=14, weight="bold"),
-        ).grid(row=0, column=0, pady=(10, 5))
+        self.text_editor = QTextEdit()
+        self.text_editor.setFont(QFont("Malgun Gothic", 14))
+        self.text_editor.setAcceptRichText(False)
+        self.text_editor.textChanged.connect(self.on_text_modified)
+        layout.addWidget(self.text_editor, 1)
 
-        editor_container = tk.Frame(self.editor_frame, bg="#1e1e1e")
-        editor_container.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
-        editor_container.grid_rowconfigure(0, weight=1)
-        editor_container.grid_columnconfigure(0, weight=1)
+        controls = QWidget()
+        ctrl = QHBoxLayout(controls)
+        ctrl.setContentsMargins(0, 0, 0, 0)
+        ctrl.setSpacing(8)
 
-        editor_scrollbar = ctk.CTkScrollbar(editor_container)
-        editor_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.save_btn = QPushButton("💾 Save (Ctrl+S)")
+        self.save_btn.setStyleSheet("font-weight: bold;")
+        self.save_btn.clicked.connect(self.save_and_commit)
+        ctrl.addWidget(self.save_btn)
 
-        self.text_editor = tk.Text(
-            editor_container,
-            font=("Malgun Gothic", 14),
-            wrap="word",
-            undo=True,
-            bg="#1e1e1e",
-            fg="#d4d4d4",
-            insertbackground="#ffffff",
-            selectbackground="#1f538d",
-            selectforeground="#ffffff",
-            relief="flat",
-            bd=0,
-            highlightthickness=0,
-            padx=8,
-            pady=8,
-            yscrollcommand=editor_scrollbar.set,
+        self.use_custom_msg = QCheckBox("커밋 메시지 직접 입력")
+        ctrl.addWidget(self.use_custom_msg)
+        ctrl.addStretch()
+
+        export_btn = QPushButton("TXT 저장")
+        export_btn.clicked.connect(self.export_txt)
+        ctrl.addWidget(export_btn)
+
+        copy_btn = QPushButton("클립보드 복사")
+        copy_btn.clicked.connect(self.copy_to_clipboard)
+        ctrl.addWidget(copy_btn)
+
+        layout.addWidget(controls)
+        return widget
+
+    def _make_history_panel(self) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(4, 0, 0, 0)
+        layout.setSpacing(6)
+
+        history_title = QLabel("HISTORY")
+        history_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        history_title.setStyleSheet("font-weight: bold; font-size: 13px; padding: 4px;")
+        layout.addWidget(history_title)
+
+        self.history_list = QListWidget()
+        self.history_list.setFont(QFont("Malgun Gothic", 10))
+        self.history_list.currentRowChanged.connect(self.on_history_select)
+        self.history_list.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu
         )
-        self.text_editor.grid(row=0, column=0, sticky="nsew")
-        editor_scrollbar.configure(command=self.text_editor.yview)
-        self.text_editor.bind('<KeyRelease>', self.on_text_modified)
-        self.text_editor.bind('<FocusIn>',
-            lambda e: fix_ime_font(self.text_editor, "Malgun Gothic", 14))
-        self.text_editor.bind('<Map>',
-            lambda e: fix_ime_font(self.text_editor, "Malgun Gothic", 14))
-
-        # Bottom controls row
-        controls_frame = ctk.CTkFrame(self.editor_frame, fg_color="transparent")
-        controls_frame.grid(row=2, column=0, pady=10, padx=10, sticky="ew")
-
-        self.save_button = ctk.CTkButton(
-            controls_frame,
-            text="💾 Save (Ctrl+S)",
-            command=self.save_and_commit,
-            font=ctk.CTkFont(size=13, weight="bold"),
-            height=35,
+        self.history_list.customContextMenuRequested.connect(
+            self.show_history_context_menu
         )
-        self.save_button.pack(side="left", padx=(0, 5))
+        layout.addWidget(self.history_list, 4)
 
-        self.use_custom_msg = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(
-            controls_frame,
-            text="커밋 메시지 직접 입력",
-            variable=self.use_custom_msg,
-            font=ctk.CTkFont(size=12),
-        ).pack(side="left", padx=10)
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color: {_BORDER};")
+        layout.addWidget(sep)
 
-        # Export buttons
-        ctk.CTkButton(
-            controls_frame,
-            text="클립보드 복사",
-            command=self.copy_to_clipboard,
-            font=ctk.CTkFont(size=12),
-            height=35,
-            width=110,
-        ).pack(side="right", padx=(5, 0))
+        diff_title = QLabel("DIFF PREVIEW")
+        diff_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        diff_title.setStyleSheet("font-weight: bold; font-size: 13px; padding: 4px;")
+        layout.addWidget(diff_title)
 
-        ctk.CTkButton(
-            controls_frame,
-            text="TXT 저장",
-            command=self.export_txt,
-            font=ctk.CTkFont(size=12),
-            height=35,
-            width=90,
-        ).pack(side="right", padx=5)
+        self.diff_text = QTextEdit()
+        self.diff_text.setFont(QFont("Malgun Gothic", 10))
+        self.diff_text.setReadOnly(True)
+        layout.addWidget(self.diff_text, 6)
 
-    def setup_history_panel(self):
-        self.right_frame = ctk.CTkFrame(self.main_frame)
-        self.right_frame.grid(row=0, column=1, padx=(5, 10), pady=10, sticky="nsew")
-        self.right_frame.grid_rowconfigure(1, weight=4)
-        self.right_frame.grid_rowconfigure(3, weight=6)
-        self.right_frame.grid_columnconfigure(0, weight=1)
+        self.restore_btn = QPushButton("↻ Restore Selected Version")
+        self.restore_btn.setEnabled(False)
+        self.restore_btn.clicked.connect(self.restore_version)
+        layout.addWidget(self.restore_btn)
 
-        ctk.CTkLabel(
-            self.right_frame,
-            text="HISTORY",
-            font=ctk.CTkFont(size=14, weight="bold"),
-        ).grid(row=0, column=0, pady=(10, 5))
+        return widget
 
-        history_list_frame = ctk.CTkFrame(self.right_frame)
-        history_list_frame.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
-        history_list_frame.grid_rowconfigure(0, weight=1)
-        history_list_frame.grid_columnconfigure(0, weight=1)
-
-        scrollbar = ctk.CTkScrollbar(history_list_frame)
-        scrollbar.grid(row=0, column=1, sticky="ns")
-
-        self.history_listbox = tk.Listbox(
-            history_list_frame,
-            font=('Consolas', 10),
-            yscrollcommand=scrollbar.set,
-            selectmode=tk.SINGLE,
-            bg="#2b2b2b",
-            fg="#ffffff",
-            selectbackground="#1f538d",
-            selectforeground="#ffffff",
-            bd=0,
-            highlightthickness=0,
-        )
-        self.history_listbox.grid(row=0, column=0, sticky="nsew")
-        scrollbar.configure(command=self.history_listbox.yview)
-
-        self.history_listbox.bind('<<ListboxSelect>>', self.on_history_select)
-
-        self.history_context_menu = tk.Menu(self.history_listbox, tearoff=0)
-        self.history_context_menu.add_command(
-            label="커밋 메시지 수정", command=self.edit_commit_message
-        )
-        self.history_listbox.bind('<Button-3>', self.show_history_context_menu)
-
-        separator = ctk.CTkFrame(self.right_frame, height=2, fg_color=("gray70", "gray30"))
-        separator.grid(row=2, column=0, padx=10, pady=10, sticky="ew")
-
-        ctk.CTkLabel(
-            self.right_frame,
-            text="DIFF PREVIEW",
-            font=ctk.CTkFont(size=14, weight="bold"),
-        ).grid(row=3, column=0, pady=(5, 5), sticky="n")
-
-        diff_frame = ctk.CTkFrame(self.right_frame)
-        diff_frame.grid(row=3, column=0, padx=10, pady=(30, 5), sticky="nsew")
-        diff_frame.grid_rowconfigure(0, weight=1)
-        diff_frame.grid_columnconfigure(0, weight=1)
-
-        diff_scrollbar = ctk.CTkScrollbar(diff_frame)
-        diff_scrollbar.grid(row=0, column=1, sticky="ns")
-
-        self.diff_text = tk.Text(
-            diff_frame,
-            font=('Consolas', 10),
-            wrap='word',
-            bg='#1e1e1e',
-            fg='#d4d4d4',
-            bd=0,
-            highlightthickness=0,
-            yscrollcommand=diff_scrollbar.set,
-            state='disabled',
-        )
-        self.diff_text.grid(row=0, column=0, sticky="nsew")
-        diff_scrollbar.configure(command=self.diff_text.yview)
-
-        self.diff_text.tag_config('delete', foreground='#ff6b6b', background='#3d1a1a')
-        self.diff_text.tag_config('insert', foreground='#69db7c', background='#1a3d1a')
-
-        self.restore_button = ctk.CTkButton(
-            self.right_frame,
-            text="↻ Restore Selected Version",
-            command=self.restore_version,
-            state="disabled",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            height=32,
-        )
-        self.restore_button.grid(row=4, column=0, pady=10, padx=10)
+    def _setup_shortcuts(self):
+        save_action = QAction(self)
+        save_action.setShortcut(QKeySequence("Ctrl+S"))
+        save_action.triggered.connect(self.save_and_commit)
+        self.addAction(save_action)
 
     # ------------------------------------------------------------------
     # Core operations
     # ------------------------------------------------------------------
 
     def _auto_message(self, old_content: str, new_content: str) -> str:
-        """Generate a short commit message from the first changed characters."""
         diff_ops = get_character_diff(old_content, new_content)
         changed = ''
         for op, text in diff_ops:
@@ -400,30 +381,27 @@ class MemoApp:
             return '(no changes)'
         return changed[:10] + '..' if len(changed) > 10 else changed
 
-    def on_text_modified(self, event=None):
-        current = self.text_editor.get('1.0', 'end-1c')
+    def on_text_modified(self):
+        current = self.text_editor.toPlainText()
         if current != self.last_saved_content:
             self.modified = True
             self.update_status()
 
     def load_content(self):
-        """Load content from document into editor."""
         content = self.doc.get_content()
-        self.text_editor.delete('1.0', tk.END)
-        if content:
-            self.text_editor.insert('1.0', content)
+        self.text_editor.blockSignals(True)
+        self.text_editor.setPlainText(content)
+        self.text_editor.blockSignals(False)
         self.last_saved_content = content
         self.modified = False
 
     def save_and_commit(self):
-        """Commit current editor content to the document."""
-        new_content = self.text_editor.get('1.0', 'end-1c')
+        new_content = self.text_editor.toPlainText()
 
-        if self.use_custom_msg.get():
-            custom_message = self.show_commit_message_dialog()
-            if custom_message is None:
+        if self.use_custom_msg.isChecked():
+            message = self._ask_commit_message()
+            if message is None:
                 return
-            message = custom_message
         else:
             snapshots = self.doc.get_snapshots()
             if len(snapshots) >= 2:
@@ -442,100 +420,81 @@ class MemoApp:
         try:
             success, result_msg = self.doc.commit(new_content, message)
         except Exception as e:
-            messagebox.showerror("Commit Error", f"Failed to commit: {e}")
+            QMessageBox.critical(self, "Commit Error", f"Failed to commit: {e}")
             return
 
         if success:
             self.last_saved_content = new_content
             self.modified = False
             prefix = "✓ Amended" if "Amended" in result_msg else "✓ Saved"
-            self.status_label.configure(text=f"{prefix}: {result_msg}")
+            self.status_label.setText(f"{prefix}: {result_msg}")
             self.refresh_history()
             self.update_status()
         else:
-            self.status_label.configure(text=f"ℹ {result_msg}")
+            self.status_label.setText(f"ℹ {result_msg}")
 
     def copy_to_clipboard(self):
-        """Copy current editor content to the system clipboard."""
-        content = self.text_editor.get('1.0', 'end-1c')
-        self.root.clipboard_clear()
-        self.root.clipboard_append(content)
-        self.status_label.configure(text="✓ 클립보드에 복사됨")
+        QApplication.clipboard().setText(self.text_editor.toPlainText())
+        self.status_label.setText("✓ 클립보드에 복사됨")
 
     def export_txt(self):
-        """Save current content as a plain .txt file."""
-        path = filedialog.asksaveasfilename(
-            parent=self.root,
-            title="TXT로 저장",
-            defaultextension=".txt",
-            filetypes=[("텍스트 파일", "*.txt"), ("모든 파일", "*.*")],
+        path, _ = QFileDialog.getSaveFileName(
+            self, "TXT로 저장", "",
+            "텍스트 파일 (*.txt);;모든 파일 (*.*)",
         )
         if not path:
             return
         try:
             self.doc.export_txt(Path(path))
-            self.status_label.configure(text=f"✓ TXT 저장됨: {Path(path).name}")
+            self.status_label.setText(f"✓ TXT 저장됨: {Path(path).name}")
         except Exception as e:
-            messagebox.showerror("저장 오류", f"파일 저장 실패: {e}")
+            QMessageBox.critical(self, "저장 오류", f"파일 저장 실패: {e}")
 
     # ------------------------------------------------------------------
     # Commit message dialog
     # ------------------------------------------------------------------
 
-    def show_commit_message_dialog(self) -> Optional[str]:
-        dialog = ctk.CTkToplevel(self.root)
-        dialog.title("커밋 메시지 입력")
-        dialog.geometry("450x150")
-        dialog.transient(self.root)
-        dialog.grab_set()
+    def _ask_commit_message(self, initial: str = "") -> Optional[str]:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("커밋 메시지 입력")
+        dialog.setFixedSize(450, 140)
 
-        dialog.update_idletasks()
-        x = self.root.winfo_x() + (self.root.winfo_width() - dialog.winfo_width()) // 2
-        y = self.root.winfo_y() + (self.root.winfo_height() - dialog.winfo_height()) // 2
-        dialog.geometry(f"+{x}+{y}")
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(8)
+        layout.addWidget(QLabel("커밋 메시지를 입력하세요:"))
 
-        result = {"message": None}
+        entry = QLineEdit(initial)
+        entry.setFont(QFont("Malgun Gothic", 12))
+        layout.addWidget(entry)
 
-        ctk.CTkLabel(dialog, text="커밋 메시지를 입력하세요:",
-                     font=ctk.CTkFont(size=13)).pack(pady=(15, 5), padx=15)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
 
-        entry = ctk.CTkEntry(dialog, font=ctk.CTkFont(family="Consolas", size=12), height=35)
-        entry.pack(fill="x", padx=15, pady=5)
-        entry.focus()
+        entry.setFocus()
+        entry.returnPressed.connect(dialog.accept)
 
-        def on_ok():
-            msg = entry.get().strip()
-            if not msg:
-                msg = str(len(self.doc.get_snapshots()) + 1)
-            result["message"] = msg
-            dialog.destroy()
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
 
-        def on_cancel():
-            dialog.destroy()
-
-        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
-        btn_frame.pack(pady=10)
-        ctk.CTkButton(btn_frame, text="확인", command=on_ok, width=100).pack(side="left", padx=5)
-        ctk.CTkButton(btn_frame, text="취소", command=on_cancel, width=100,
-                      fg_color="gray50", hover_color="gray40").pack(side="left", padx=5)
-
-        entry.bind('<Return>', lambda e: on_ok())
-        entry.bind('<Escape>', lambda e: on_cancel())
-        dialog.wait_window()
-        return result["message"]
+        msg = entry.text().strip()
+        return msg if msg else str(len(self.doc.get_snapshots()) + 1)
 
     # ------------------------------------------------------------------
     # History panel
     # ------------------------------------------------------------------
 
     def refresh_history(self):
-        self.history_listbox.delete(0, tk.END)
-
-        snapshots = list(reversed(self.doc.get_snapshots()))  # newest first
-        self.snapshots: List[MemitSnapshot] = snapshots
+        self.history_list.clear()
+        snapshots = list(reversed(self.doc.get_snapshots()))
+        self.snapshots = snapshots
 
         if not snapshots:
-            self.history_listbox.insert(tk.END, "No snapshots yet")
+            self.history_list.addItem("No snapshots yet")
             return
 
         for i, snap in enumerate(snapshots):
@@ -545,32 +504,28 @@ class MemoApp:
             except Exception:
                 time_str = snap.timestamp
 
-            entry = f"#{snap.id}: {snap.message} - {time_str}"
-            self.history_listbox.insert(tk.END, entry)
-            idx = self.history_listbox.size() - 1
-
+            item = QListWidgetItem(f"#{snap.id}: {snap.message} - {time_str}")
             change_type = self._change_type(snap, i, snapshots)
-            bg = {'insert': '#90ee90', 'delete': '#ff9999', 'mixed': '#b0c4de'}.get(change_type)
+            bg = {
+                'insert': '#1a3d1a',
+                'delete': '#3d1a1a',
+                'mixed':  '#1a2d3d',
+            }.get(change_type)
             if bg:
-                self.history_listbox.itemconfig(idx, bg=bg, fg='#000000')
+                item.setBackground(QColor(bg))
+            self.history_list.addItem(item)
 
     def _change_type(self, snap: MemitSnapshot, index: int,
                      snapshots: List[MemitSnapshot]) -> str:
-        """Classify the change type for coloring the history entry."""
         if index >= len(snapshots) - 1:
             return 'insert'
-
         prev = snapshots[index + 1]
-        cur_content = snap.content
-        prev_content = prev.content
-
-        if not prev_content and cur_content:
+        if not prev.content and snap.content:
             return 'insert'
-        if prev_content and not cur_content:
+        if prev.content and not snap.content:
             return 'delete'
-
         try:
-            diff_ops = get_character_diff(prev_content, cur_content)
+            diff_ops = get_character_diff(prev.content, snap.content)
             has_ins = any(op == 'insert' for op, _ in diff_ops)
             has_del = any(op == 'delete' for op, _ in diff_ops)
             if has_ins and has_del:
@@ -579,67 +534,57 @@ class MemoApp:
         except Exception:
             return 'mixed'
 
-    def on_history_select(self, event=None):
-        selection = self.history_listbox.curselection()
-        if not selection or not hasattr(self, 'snapshots'):
-            self.restore_button.configure(state="disabled")
+    def on_history_select(self, row: int):
+        if row < 0 or row >= len(self.snapshots):
+            self.restore_btn.setEnabled(False)
             return
-
-        idx = selection[0]
-        if idx >= len(self.snapshots):
-            return
-
-        self.restore_button.configure(state="normal")
-
-        snap = self.snapshots[idx]
-        new_content = snap.content
-        old_content = self.snapshots[idx + 1].content if idx + 1 < len(self.snapshots) else ''
-        self.show_diff(old_content, new_content)
+        self.restore_btn.setEnabled(True)
+        snap = self.snapshots[row]
+        old_content = self.snapshots[row + 1].content if row + 1 < len(self.snapshots) else ''
+        self.show_diff(old_content, snap.content)
 
     def show_diff(self, old_content: str, new_content: str):
-        self.diff_text.configure(state='normal')
-        self.diff_text.delete('1.0', tk.END)
-
+        self.diff_text.clear()
         if old_content == new_content:
-            self.diff_text.insert('1.0', "[No differences - content is identical]")
-            self.diff_text.configure(state='disabled')
+            self.diff_text.setPlainText("[No differences - content is identical]")
             return
-
+        cursor = QTextCursor(self.diff_text.document())
         try:
             for op, text in get_character_diff(old_content, new_content):
-                tag = None if op == 'equal' else op
-                self.diff_text.insert(tk.END, text, tag)
+                fmt = QTextCharFormat()
+                if op == 'insert':
+                    fmt.setForeground(QColor('#69db7c'))
+                    fmt.setBackground(QColor('#1a3d1a'))
+                elif op == 'delete':
+                    fmt.setForeground(QColor('#ff6b6b'))
+                    fmt.setBackground(QColor('#3d1a1a'))
+                else:
+                    fmt.setForeground(QColor(_TEXT_FG))
+                cursor.insertText(text, fmt)
         except Exception as e:
-            self.diff_text.insert('1.0', f"Error generating diff: {e}")
-
-        self.diff_text.configure(state='disabled')
+            self.diff_text.setPlainText(f"Error generating diff: {e}")
 
     def restore_version(self):
-        selection = self.history_listbox.curselection()
-        if not selection or not hasattr(self, 'snapshots'):
+        row = self.history_list.currentRow()
+        if row < 0 or row >= len(self.snapshots):
             return
-
-        idx = selection[0]
-        if idx >= len(self.snapshots):
-            return
-
-        snap = self.snapshots[idx]
-        if not messagebox.askyesno(
-            "Restore Version",
+        snap = self.snapshots[row]
+        reply = QMessageBox.question(
+            self, "Restore Version",
             f"Snapshot #{snap.id}을 복원할까요?\n\n"
             f"메시지: {snap.message}\n시간: {snap.timestamp}\n\n"
             "현재 저장되지 않은 내용은 사라집니다.",
-        ):
+        )
+        if reply != QMessageBox.StandardButton.Yes:
             return
-
-        self.text_editor.delete('1.0', tk.END)
-        self.text_editor.insert('1.0', snap.content)
+        self.text_editor.blockSignals(True)
+        self.text_editor.setPlainText(snap.content)
+        self.text_editor.blockSignals(False)
         self.last_saved_content = ""
         self.modified = True
         self.update_status()
-
-        messagebox.showinfo(
-            "Version Restored",
+        QMessageBox.information(
+            self, "Version Restored",
             f"Snapshot #{snap.id}이 에디터에 복원되었습니다.\n\n"
             "저장하려면 Save & Commit 버튼을 누르세요.",
         )
@@ -654,86 +599,76 @@ class MemoApp:
             status = "No snapshots yet"
             if self.modified:
                 status += " | Modified ✏️"
-        self.status_label.configure(text=f"Status: {status}")
+        self.status_label.setText(f"Status: {status}")
 
     # ------------------------------------------------------------------
-    # Edit commit message (right-click context menu)
+    # Context menu / edit commit message
     # ------------------------------------------------------------------
 
-    def show_history_context_menu(self, event):
-        index = self.history_listbox.nearest(event.y)
-        self.history_listbox.selection_clear(0, tk.END)
-        self.history_listbox.selection_set(index)
-        self.history_listbox.activate(index)
-        try:
-            self.history_context_menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            self.history_context_menu.grab_release()
+    def show_history_context_menu(self, pos):
+        row = self.history_list.currentRow()
+        if row < 0 or row >= len(self.snapshots):
+            return
+        menu = QMenu(self)
+        edit_action = menu.addAction("커밋 메시지 수정")
+        action = menu.exec(self.history_list.mapToGlobal(pos))
+        if action == edit_action:
+            self._edit_commit_message(row)
 
-    def edit_commit_message(self):
-        selection = self.history_listbox.curselection()
-        if not selection or not hasattr(self, 'snapshots'):
+    def _edit_commit_message(self, row: int):
+        if row >= len(self.snapshots):
+            return
+        snap = self.snapshots[row]
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("커밋 메시지 수정")
+        dialog.setFixedSize(450, 140)
+
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(8)
+        layout.addWidget(QLabel(f"Snapshot #{snap.id}의 메시지를 수정:"))
+
+        entry = QLineEdit(snap.message)
+        entry.setFont(QFont("Malgun Gothic", 12))
+        entry.selectAll()
+        layout.addWidget(entry)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        entry.setFocus()
+        entry.returnPressed.connect(dialog.accept)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
-        idx = selection[0]
-        if idx >= len(self.snapshots):
-            return
-
-        snap = self.snapshots[idx]
-
-        dialog = ctk.CTkToplevel(self.root)
-        dialog.title("커밋 메시지 수정")
-        dialog.geometry("450x150")
-        dialog.transient(self.root)
-        dialog.grab_set()
-
-        dialog.update_idletasks()
-        x = self.root.winfo_x() + (self.root.winfo_width() - dialog.winfo_width()) // 2
-        y = self.root.winfo_y() + (self.root.winfo_height() - dialog.winfo_height()) // 2
-        dialog.geometry(f"+{x}+{y}")
-
-        result = {"message": None}
-
-        ctk.CTkLabel(dialog, text=f"Snapshot #{snap.id}의 메시지를 수정:",
-                     font=ctk.CTkFont(size=13)).pack(pady=(15, 5), padx=15)
-
-        entry = ctk.CTkEntry(dialog, font=ctk.CTkFont(family="Consolas", size=12), height=35)
-        entry.pack(fill="x", padx=15, pady=5)
-        entry.insert(0, snap.message)
-        entry.select_range(0, tk.END)
-        entry.focus()
-
-        def on_ok():
-            new_msg = entry.get().strip()
-            if new_msg and new_msg != snap.message:
-                result["message"] = new_msg
-            dialog.destroy()
-
-        def on_cancel():
-            dialog.destroy()
-
-        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
-        btn_frame.pack(pady=10)
-        ctk.CTkButton(btn_frame, text="확인", command=on_ok, width=100).pack(side="left", padx=5)
-        ctk.CTkButton(btn_frame, text="취소", command=on_cancel, width=100,
-                      fg_color="gray50", hover_color="gray40").pack(side="left", padx=5)
-
-        entry.bind('<Return>', lambda e: on_ok())
-        entry.bind('<Escape>', lambda e: on_cancel())
-        dialog.wait_window()
-
-        if result["message"]:
-            snap.message = result["message"]
+        new_msg = entry.text().strip()
+        if new_msg and new_msg != snap.message:
+            snap.message = new_msg
             self.doc.save()
             self.refresh_history()
-            self.status_label.configure(text=f"✓ Snapshot #{snap.id} 메시지 수정됨")
+            self.status_label.setText(f"✓ Snapshot #{snap.id} 메시지 수정됨")
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _ask_file_path() -> Optional[Path]:
+    dialog = _FileChooserDialog()
+    dialog.exec()
+    return dialog.result_path
+
+
 def main():
+    app = QApplication(sys.argv)
+    app.setStyleSheet(_STYLESHEET)
+
     if len(sys.argv) > 1:
         doc_path = Path(sys.argv[1])
     else:
@@ -745,14 +680,14 @@ def main():
         try:
             doc = MemitDocument.load(doc_path)
         except Exception as e:
-            messagebox.showerror("파일 오류", f"파일을 열 수 없습니다:\n{e}")
+            QMessageBox.critical(None, "파일 오류", f"파일을 열 수 없습니다:\n{e}")
             return
     else:
         doc = MemitDocument.create(doc_path)
 
-    root = ctk.CTk()
-    MemoApp(root, doc)
-    root.mainloop()
+    window = MemoApp(doc)
+    window.show()
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
