@@ -86,13 +86,57 @@ function initApp() {
 }
 
 // ---------------------------------------------------------------------------
-// 편집 감지
+// 편집 감지 + 삭제 시 자동 커밋 (debounce)
 // ---------------------------------------------------------------------------
 
+const AUTO_COMMIT_DELAY = 1500; // ms
+let _autoCommitTimer: ReturnType<typeof setTimeout> | null = null;
+let _preChangeContent = '';   // beforeinput에서 캡처한 변경 전 내용
+let _inDeletionSeq = false;   // 연속 삭제 중 여부
+
+function scheduleAutoCommit() {
+  if (_autoCommitTimer) clearTimeout(_autoCommitTimer);
+  _autoCommitTimer = setTimeout(async () => {
+    _autoCommitTimer = null;
+    if (modified) await saveAndCommit();
+  }, AUTO_COMMIT_DELAY);
+}
+
+function cancelAutoCommit() {
+  if (_autoCommitTimer) { clearTimeout(_autoCommitTimer); _autoCommitTimer = null; }
+}
+
+// beforeinput: DOM 변경 전 → 변경 전 내용을 저장해둔다
+editor.addEventListener('beforeinput', () => {
+  _preChangeContent = editor.value;
+});
+
+// input: DOM 변경 후 → 길이 비교로 "실질적 삭제" 감지
+// (backspace, delete, 선택 후 타이핑/붙여넣기/cut 모두 처리)
 editor.addEventListener('input', () => {
-  if (editor.value !== lastSavedContent) {
+  const current = editor.value;
+
+  if (current !== lastSavedContent) {
     modified = true;
     updateStatus();
+  }
+
+  if (current.length < _preChangeContent.length) {
+    // 내용이 줄었다 = 실질적 삭제 발생
+    if (!_inDeletionSeq) {
+      _inDeletionSeq = true;
+      // 삭제 직전 상태에 미저장 내용이 있으면 즉시 커밋
+      // saveAndCommit 내부의 cancelAutoCommit은 아직 없는 타이머를 취소 → no-op
+      // 이후 scheduleAutoCommit이 새 타이머를 등록하므로 문제없음
+      if (_preChangeContent !== lastSavedContent) {
+        saveAndCommit(_preChangeContent);
+      }
+    }
+    scheduleAutoCommit();  // 1.5초 후 삭제 후 최종 상태 커밋
+  } else {
+    // 내용이 늘었거나 같다 = 타이핑·붙여넣기(순증가)
+    _inDeletionSeq = false;
+    cancelAutoCommit();  // 타이핑 중엔 자동 커밋 불필요
   }
 });
 
@@ -115,9 +159,10 @@ saveFileBtn.addEventListener('click', saveToFile);
 // 커밋 → IndexedDB만
 // ---------------------------------------------------------------------------
 
-async function saveAndCommit() {
+async function saveAndCommit(contentOverride?: string) {
   if (!doc) return;
-  const newContent = editor.value;
+  cancelAutoCommit();
+  const newContent = contentOverride ?? editor.value;
 
   let message: string;
   if (customMsgChk.checked) {
