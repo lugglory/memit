@@ -18,7 +18,9 @@ import { getCharacterDiff } from './lib/diffEngine';
 
 let doc: MemitDocument | null = null;
 let snapshots: MemitSnapshot[] = [];
-let selectedRow = -1;
+let visibleSnapshots: { snap: MemitSnapshot; origIndex: number }[] = [];
+let selectedRow = -1;         // visibleSnapshots 내 인덱스
+let filterDeleteOnly = false;
 let lastSavedContent = '';
 let modified = false;         // 에디터 내용이 마지막 커밋과 다름
 
@@ -39,11 +41,14 @@ const saveFileBtn  = el<HTMLButtonElement>('save-file-btn');
 const customMsgChk = el<HTMLInputElement>('custom-msg');
 const exportBtn    = el<HTMLButtonElement>('export-btn');
 const copyBtn      = el<HTMLButtonElement>('copy-btn');
-const historyList  = el<HTMLUListElement>('history-list');
-const diffView     = el<HTMLDivElement>('diff-view');
-const restoreBtn   = el<HTMLButtonElement>('restore-btn');
-const ctxMenu      = el<HTMLDivElement>('ctx-menu');
-const ctxEdit      = el<HTMLDivElement>('ctx-edit');
+const historyList   = el<HTMLUListElement>('history-list');
+const diffView      = el<HTMLDivElement>('diff-view');
+const restoreBtn    = el<HTMLButtonElement>('restore-btn');
+const filterDelBtn  = el<HTMLButtonElement>('filter-del-btn');
+const prevSnapBtn   = el<HTMLButtonElement>('prev-snap-btn');
+const nextSnapBtn   = el<HTMLButtonElement>('next-snap-btn');
+const ctxMenu       = el<HTMLDivElement>('ctx-menu');
+const ctxEdit       = el<HTMLDivElement>('ctx-edit');
 
 // ---------------------------------------------------------------------------
 // 파일 열기 / 만들기
@@ -181,11 +186,36 @@ editor.addEventListener('input', () => {
 // ---------------------------------------------------------------------------
 
 document.addEventListener('keydown', e => {
-  if (!(e.ctrlKey || e.metaKey)) return;
-  const key = e.key.toLowerCase();
-  if (key === 's' && e.shiftKey)  { e.preventDefault(); saveToFile(); }
-  else if (key === 's')           { e.preventDefault(); saveAndCommit(); }
+  // Ctrl+S / Ctrl+Shift+S
+  if (e.ctrlKey || e.metaKey) {
+    const key = e.key.toLowerCase();
+    if (key === 's' && e.shiftKey)  { e.preventDefault(); saveToFile(); }
+    else if (key === 's')           { e.preventDefault(); saveAndCommit(); }
+    return;
+  }
+  // Alt+↑/↓ — 히스토리 순회
+  if (e.altKey) {
+    if (e.key === 'ArrowUp')   { e.preventDefault(); navigateHistory(-1); }
+    if (e.key === 'ArrowDown') { e.preventDefault(); navigateHistory(1); }
+  }
 });
+
+function navigateHistory(dir: 1 | -1) {
+  if (visibleSnapshots.length === 0) return;
+  const next = selectedRow < 0
+    ? (dir === 1 ? 0 : visibleSnapshots.length - 1)
+    : Math.max(0, Math.min(visibleSnapshots.length - 1, selectedRow + dir));
+  selectRow(next);
+}
+
+filterDelBtn.addEventListener('click', () => {
+  filterDeleteOnly = !filterDeleteOnly;
+  filterDelBtn.classList.toggle('active', filterDeleteOnly);
+  refreshHistory();
+});
+
+prevSnapBtn.addEventListener('click', () => navigateHistory(-1));
+nextSnapBtn.addEventListener('click', () => navigateHistory(1));
 
 saveBtn.addEventListener('click', saveAndCommit);
 saveFileBtn.addEventListener('click', saveToFile);
@@ -317,20 +347,27 @@ function refreshHistory() {
   restoreBtn.disabled = true;
   diffView.innerHTML = '';
 
-  if (snapshots.length === 0) {
+  // 필터 적용
+  visibleSnapshots = snapshots
+    .map((snap, origIndex) => ({ snap, origIndex }))
+    .filter(({ snap, origIndex }) =>
+      !filterDeleteOnly || ['delete', 'mixed'].includes(getChangeType(snap, origIndex))
+    );
+
+  if (visibleSnapshots.length === 0) {
     const li = document.createElement('li');
-    li.textContent = 'No snapshots yet';
+    li.textContent = snapshots.length === 0 ? 'No snapshots yet' : '삭제 이력 없음';
     li.style.color = '#666';
     historyList.appendChild(li);
     return;
   }
 
-  snapshots.forEach((snap, i) => {
+  visibleSnapshots.forEach(({ snap, origIndex }, i) => {
     const li = document.createElement('li');
     li.dataset.row = String(i);
     li.textContent = formatSnapEntry(snap);
 
-    const changeType = getChangeType(snap, i);
+    const changeType = getChangeType(snap, origIndex);
     if (changeType === 'insert') li.style.background = '#1a3d1a';
     else if (changeType === 'delete') li.style.background = '#3d1a1a';
     else if (changeType === 'mixed')  li.style.background = '#1a2d3d';
@@ -368,13 +405,16 @@ function getChangeType(snap: MemitSnapshot, index: number): 'insert' | 'delete' 
 }
 
 function selectRow(row: number) {
+  if (row < 0 || row >= visibleSnapshots.length) return;
   historyList.querySelectorAll('li.selected').forEach(el => el.classList.remove('selected'));
   selectedRow = row;
-  historyList.querySelector<HTMLLIElement>(`li[data-row="${row}"]`)?.classList.add('selected');
+  const li = historyList.querySelector<HTMLLIElement>(`li[data-row="${row}"]`);
+  li?.classList.add('selected');
+  li?.scrollIntoView({ block: 'nearest' });
   restoreBtn.disabled = false;
 
-  const snap = snapshots[row];
-  const oldContent = row + 1 < snapshots.length ? snapshots[row + 1].content : '';
+  const { snap, origIndex } = visibleSnapshots[row];
+  const oldContent = origIndex + 1 < snapshots.length ? snapshots[origIndex + 1].content : '';
   showDiff(oldContent, snap.content);
 }
 
@@ -406,8 +446,8 @@ function showDiff(oldContent: string, newContent: string) {
 // ---------------------------------------------------------------------------
 
 restoreBtn.addEventListener('click', async () => {
-  if (selectedRow < 0 || selectedRow >= snapshots.length) return;
-  const snap = snapshots[selectedRow];
+  if (selectedRow < 0 || selectedRow >= visibleSnapshots.length) return;
+  const { snap } = visibleSnapshots[selectedRow];
   const ok = confirm(
     `Snapshot #${snap.id}을 복원할까요?\n\n` +
     `메시지: ${snap.message}\n시간: ${snap.timestamp}\n\n` +
@@ -437,8 +477,8 @@ function showCtxMenu(e: MouseEvent, row: number) {
 
 ctxEdit.addEventListener('click', async () => {
   hideCtxMenu();
-  if (ctxRow < 0 || ctxRow >= snapshots.length || !doc) return;
-  const snap = snapshots[ctxRow];
+  if (ctxRow < 0 || ctxRow >= visibleSnapshots.length || !doc) return;
+  const { snap } = visibleSnapshots[ctxRow];
   const newMsg = await promptDialog(`Snapshot #${snap.id}의 메시지를 수정:`, snap.message);
   if (newMsg === null || !newMsg.trim() || newMsg.trim() === snap.message) return;
   await doc.updateMessage(snap.id, newMsg.trim());
