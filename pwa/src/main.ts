@@ -90,16 +90,14 @@ function initApp() {
 // 편집 감지 + 삭제 시 자동 커밋 (debounce)
 // ---------------------------------------------------------------------------
 
-const AUTO_COMMIT_DELAY = 1500; // ms
-const CAPTURE_INTERVAL  = 3000; // ms — 삭제 직전 상태 캡처 주기
+const AUTO_COMMIT_DELAY = 1500; // ms — 삭제 후 자동 커밋 대기
+const AUTO_SAVE_DELAY   = 3000; // ms — 일반 타이핑 후 자동 저장 대기
 let _autoCommitTimer: ReturnType<typeof setTimeout> | null = null;
-let _preChangeContent = '';   // 주기적으로 캡처한 삭제 직전 기준 내용
+let _autoSaveTimer:   ReturnType<typeof setTimeout> | null = null;
+let _autoSaveDotTimer: ReturnType<typeof setInterval> | null = null;
+let _autoSavePending = false;
+let _preChangeContent = '';   // 마지막 커밋 시점의 내용 (삭제 직전 상태 보호용)
 let _inDeletionSeq = false;   // 연속 삭제 중 여부
-
-// 3초마다 현재 내용을 캡처 (삭제 중엔 갱신 안 함)
-setInterval(() => {
-  if (!_inDeletionSeq) _preChangeContent = editor.value;
-}, CAPTURE_INTERVAL);
 
 function scheduleAutoCommit() {
   if (_autoCommitTimer) clearTimeout(_autoCommitTimer);
@@ -113,6 +111,42 @@ function cancelAutoCommit() {
   if (_autoCommitTimer) { clearTimeout(_autoCommitTimer); _autoCommitTimer = null; }
 }
 
+/** 텍스트 변경 발생 시 호출 — 대기 중이면 무시, 3초 후 자동 저장 */
+function startAutoSave() {
+  if (_autoSavePending) return;
+  _autoSavePending = true;
+  let dots = 1;
+  setStatus('저장.');
+  _autoSaveDotTimer = setInterval(() => {
+    if (dots < 3) { dots++; setStatus('저장' + '.'.repeat(dots)); }
+  }, 1000);
+  _autoSaveTimer = setTimeout(async () => {
+    clearInterval(_autoSaveDotTimer!); _autoSaveDotTimer = null;
+    _autoSaveTimer = null;
+    _autoSavePending = false;
+    if (!doc || !modified) { updateStatus(); return; }
+    const newContent = editor.value;
+    try {
+      const [success] = await doc.commit(newContent, autoMessage(newContent));
+      if (success) {
+        lastSavedContent = newContent;
+        _preChangeContent = newContent;
+        modified = false;
+        refreshHistory();
+      }
+      flashStatus('저장 완료');
+    } catch (e) {
+      flashStatus(`자동 저장 실패: ${e}`);
+    }
+  }, AUTO_SAVE_DELAY);
+}
+
+function cancelAutoSave() {
+  if (_autoSaveTimer)    { clearTimeout(_autoSaveTimer);    _autoSaveTimer = null; }
+  if (_autoSaveDotTimer) { clearInterval(_autoSaveDotTimer); _autoSaveDotTimer = null; }
+  if (_autoSavePending)  { _autoSavePending = false; updateStatus(); }
+}
+
 // input: DOM 변경 후 → 길이 비교로 "실질적 삭제" 감지
 // (backspace, delete, 선택 후 타이핑/붙여넣기/cut 모두 처리)
 editor.addEventListener('input', () => {
@@ -120,16 +154,14 @@ editor.addEventListener('input', () => {
 
   if (current !== lastSavedContent) {
     modified = true;
-    updateStatus();
+    if (!_autoSavePending) updateStatus();  // 저장 애니메이션 중엔 덮어쓰지 않음
   }
 
   if (current.length < _preChangeContent.length) {
     // 내용이 줄었다 = 실질적 삭제 발생
+    cancelAutoSave();
     if (!_inDeletionSeq) {
       _inDeletionSeq = true;
-      // 삭제 직전 상태에 미저장 내용이 있으면 즉시 커밋
-      // saveAndCommit 내부의 cancelAutoCommit은 아직 없는 타이머를 취소 → no-op
-      // 이후 scheduleAutoCommit이 새 타이머를 등록하므로 문제없음
       if (_preChangeContent !== lastSavedContent) {
         saveAndCommit(_preChangeContent);
       }
@@ -138,7 +170,8 @@ editor.addEventListener('input', () => {
   } else {
     // 내용이 늘었거나 같다 = 타이핑·붙여넣기(순증가)
     _inDeletionSeq = false;
-    cancelAutoCommit();  // 타이핑 중엔 자동 커밋 불필요
+    cancelAutoCommit();
+    startAutoSave();  // 텍스트 변경 → 3초 후 자동 저장
   }
 });
 
@@ -164,6 +197,7 @@ saveFileBtn.addEventListener('click', saveToFile);
 async function saveAndCommit(contentOverride?: string) {
   if (!doc) return;
   cancelAutoCommit();
+  cancelAutoSave();
   const newContent = contentOverride ?? editor.value;
 
   let message: string;
@@ -473,7 +507,7 @@ function promptDialog(label: string, initial: string): Promise<string | null> {
 // ---------------------------------------------------------------------------
 
 function updateStatus() {
-  if (!doc) return;
+  if (!doc || _autoSavePending) return;
   const snaps = doc.getSnapshots();
   let status: string;
 
