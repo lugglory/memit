@@ -79,6 +79,7 @@ function initApp() {
   const content = doc.getContent();
   editor.value = content;
   lastSavedContent = content;
+  _preChangeContent = content;
   modified = false;
 
   refreshHistory();
@@ -90,9 +91,15 @@ function initApp() {
 // ---------------------------------------------------------------------------
 
 const AUTO_COMMIT_DELAY = 1500; // ms
+const CAPTURE_INTERVAL  = 3000; // ms — 삭제 직전 상태 캡처 주기
 let _autoCommitTimer: ReturnType<typeof setTimeout> | null = null;
-let _preChangeContent = '';   // beforeinput에서 캡처한 변경 전 내용
+let _preChangeContent = '';   // 주기적으로 캡처한 삭제 직전 기준 내용
 let _inDeletionSeq = false;   // 연속 삭제 중 여부
+
+// 3초마다 현재 내용을 캡처 (삭제 중엔 갱신 안 함)
+setInterval(() => {
+  if (!_inDeletionSeq) _preChangeContent = editor.value;
+}, CAPTURE_INTERVAL);
 
 function scheduleAutoCommit() {
   if (_autoCommitTimer) clearTimeout(_autoCommitTimer);
@@ -105,11 +112,6 @@ function scheduleAutoCommit() {
 function cancelAutoCommit() {
   if (_autoCommitTimer) { clearTimeout(_autoCommitTimer); _autoCommitTimer = null; }
 }
-
-// beforeinput: DOM 변경 전 → 변경 전 내용을 저장해둔다
-editor.addEventListener('beforeinput', () => {
-  _preChangeContent = editor.value;
-});
 
 // input: DOM 변경 후 → 길이 비교로 "실질적 삭제" 감지
 // (backspace, delete, 선택 후 타이핑/붙여넣기/cut 모두 처리)
@@ -177,6 +179,7 @@ async function saveAndCommit(contentOverride?: string) {
     const [success, resultMsg] = await doc.commit(newContent, message);
     if (success) {
       lastSavedContent = newContent;
+      _preChangeContent = newContent;
       modified = false;
       const prefix = resultMsg.includes('Amended') ? '✓ Amended' : '✓ Saved';
       refreshHistory();
