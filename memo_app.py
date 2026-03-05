@@ -9,12 +9,66 @@ Run without arguments to show the Open/New file dialog.
 """
 
 import sys
+import ctypes
+import ctypes.wintypes
 import tkinter as tk
-import tkinter.font as tkfont
 from pathlib import Path
 from datetime import datetime
 from tkinter import filedialog, messagebox
 from typing import List, Optional
+
+
+# ---------------------------------------------------------------------------
+# Windows IME 조합 폰트 직접 설정
+# tkinter가 ImmSetCompositionFont를 잘못 처리해 조합 문자가 작게(윗첨자처럼)
+# 보이는 문제를 Win32 API로 직접 보완한다.
+# ---------------------------------------------------------------------------
+
+def _build_logfontw(family: str, size_pt: int, hwnd: int):
+    class LOGFONTW(ctypes.Structure):
+        _fields_ = [
+            ('lfHeight',         ctypes.c_long),
+            ('lfWidth',          ctypes.c_long),
+            ('lfEscapement',     ctypes.c_long),
+            ('lfOrientation',    ctypes.c_long),
+            ('lfWeight',         ctypes.c_long),
+            ('lfItalic',         ctypes.c_byte),
+            ('lfUnderline',      ctypes.c_byte),
+            ('lfStrikeOut',      ctypes.c_byte),
+            ('lfCharSet',        ctypes.c_byte),
+            ('lfOutPrecision',   ctypes.c_byte),
+            ('lfClipPrecision',  ctypes.c_byte),
+            ('lfQuality',        ctypes.c_byte),
+            ('lfPitchAndFamily', ctypes.c_byte),
+            ('lfFaceName',       ctypes.c_wchar * 32),
+        ]
+    try:
+        dpi = ctypes.windll.user32.GetDpiForWindow(hwnd)
+    except Exception:
+        dpi = 96
+    lf = LOGFONTW()
+    lf.lfHeight = -int(size_pt * dpi / 72)  # 음수 = 픽셀 높이
+    lf.lfWeight = 400   # FW_NORMAL
+    lf.lfCharSet = 129  # HANGUL_CHARSET
+    lf.lfFaceName = family
+    return lf
+
+
+def fix_ime_font(widget: tk.Text, family: str, size_pt: int):
+    """포커스를 받을 때마다 IME 조합 폰트를 강제 설정한다."""
+    if sys.platform != 'win32':
+        return
+    try:
+        hwnd = widget.winfo_id()
+        imm32 = ctypes.windll.imm32
+        himc = imm32.ImmGetContext(hwnd)
+        if not himc:
+            return
+        lf = _build_logfontw(family, size_pt, hwnd)
+        imm32.ImmSetCompositionFontW(himc, ctypes.byref(lf))
+        imm32.ImmReleaseContext(hwnd, himc)
+    except Exception:
+        pass
 
 import customtkinter as ctk
 
@@ -167,17 +221,38 @@ class MemoApp:
             font=ctk.CTkFont(size=14, weight="bold"),
         ).grid(row=0, column=0, pady=(10, 5))
 
-        self.text_editor = ctk.CTkTextbox(
-            self.editor_frame,
-            font=ctk.CTkFont(family="Consolas", size=14),
+        editor_container = tk.Frame(self.editor_frame, bg="#1e1e1e")
+        editor_container.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
+        editor_container.grid_rowconfigure(0, weight=1)
+        editor_container.grid_columnconfigure(0, weight=1)
+
+        editor_scrollbar = ctk.CTkScrollbar(editor_container)
+        editor_scrollbar.grid(row=0, column=1, sticky="ns")
+
+        self.text_editor = tk.Text(
+            editor_container,
+            font=("Malgun Gothic", 14),
             wrap="word",
             undo=True,
+            bg="#1e1e1e",
+            fg="#d4d4d4",
+            insertbackground="#ffffff",
+            selectbackground="#1f538d",
+            selectforeground="#ffffff",
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            padx=8,
+            pady=8,
+            yscrollcommand=editor_scrollbar.set,
         )
-        self.text_editor.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
-        # Windows IME가 CTkFont를 인식하지 못해 조합 문자 크기가 작아지므로
-        # 내부 tk.Text 위젯에 직접 tkfont.Font를 재지정한다.
-        self.text_editor._textbox.configure(font=tkfont.Font(family="Consolas", size=14))
+        self.text_editor.grid(row=0, column=0, sticky="nsew")
+        editor_scrollbar.configure(command=self.text_editor.yview)
         self.text_editor.bind('<KeyRelease>', self.on_text_modified)
+        self.text_editor.bind('<FocusIn>',
+            lambda e: fix_ime_font(self.text_editor, "Malgun Gothic", 14))
+        self.text_editor.bind('<Map>',
+            lambda e: fix_ime_font(self.text_editor, "Malgun Gothic", 14))
 
         # Bottom controls row
         controls_frame = ctk.CTkFrame(self.editor_frame, fg_color="transparent")
