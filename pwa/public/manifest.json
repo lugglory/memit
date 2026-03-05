@@ -1,0 +1,10 @@
+{
+  "name": "Memit Memo",
+  "short_name": "Memit",
+  "description": "버전 히스토리가 있는 메모 에디터",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#1e1e1e",
+  "theme_color": "#1f538d",
+  "icons": []
+}

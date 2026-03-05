@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#1f538d" />
+  <link rel="manifest" href="./manifest.json" />
+  <title>Memit Memo</title>
+</head>
+<body>
+
+  <!-- ─── 랜딩 (파일 미선택 상태) ─── -->
+  <div id="landing" style="
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; height: 100vh; gap: 16px;
+  ">
+    <h1 style="font-size: 22px; color: #d4d4d4; font-weight: bold;">Memit Memo</h1>
+    <p style="color: #888; font-size: 13px;">버전 히스토리가 있는 메모 에디터</p>
+    <div style="display: flex; gap: 12px; margin-top: 8px;">
+      <button id="btn-open" style="font-size: 14px; padding: 8px 24px;">파일 열기</button>
+      <button id="btn-new"  style="font-size: 14px; padding: 8px 24px;">새로 만들기</button>
+    </div>
+    <p style="color: #555; font-size: 11px; margin-top: 8px;">
+      Chrome / Edge 전용 (File System Access API)
+    </p>
+  </div>
+
+  <!-- ─── 메인 앱 (파일 열린 후) ─── -->
+  <div id="app" style="display: none;">
+
+    <div id="status-bar">Status: No snapshots yet</div>
+
+    <div id="splitter">
+
+      <!-- 에디터 패널 -->
+      <div id="editor-panel">
+        <div class="panel-title">MEMO EDITOR</div>
+
+        <textarea id="editor" spellcheck="false" placeholder="여기에 메모를 입력하세요..."></textarea>
+
+        <div id="controls">
+          <button id="save-btn">💾 Save (Ctrl+S)</button>
+          <label>
+            <input type="checkbox" id="custom-msg" />
+            커밋 메시지 직접 입력
+          </label>
+          <div class="spacer"></div>
+          <button id="export-btn">TXT 저장</button>
+          <button id="copy-btn">클립보드 복사</button>
+        </div>
+      </div>
+
+      <!-- 드래그 핸들 -->
+      <div id="drag-handle"></div>
+
+      <!-- 히스토리 패널 -->
+      <div id="history-panel">
+        <div class="panel-title">HISTORY</div>
+        <ul id="history-list"></ul>
+
+        <div class="sep"></div>
+        <div class="panel-title">DIFF PREVIEW</div>
+        <div id="diff-view"></div>
+
+        <button id="restore-btn" disabled>↻ Restore Selected Version</button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- 컨텍스트 메뉴 -->
+  <div id="ctx-menu" style="display:none;">
+    <div id="ctx-edit">커밋 메시지 수정</div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

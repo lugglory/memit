@@ -39,3 +39,7 @@ Thumbs.db
 # memit repositories
 .memit/
 memo_data/
+
+# PWA
+pwa/node_modules/
+pwa/dist/
