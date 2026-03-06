@@ -2,9 +2,9 @@
  * main.ts — Memit PWA 메인 UI
  *
  * 저장 전략:
- *   Ctrl+S   → IndexedDB에 커밋 (빠름)
+ *   Ctrl+S            → IndexedDB에 커밋
  *   Ctrl+Shift+S / "파일에 저장" 버튼 → 실제 .memit 파일에 쓰기
- *   탭 닫기 전 → 저장되지 않은 파일 변경이 있으면 경고
+ *   탭 닫기 전        → 저장되지 않은 파일 변경이 있으면 경고
  */
 import './style.css';
 import { MemitDocument } from './lib/document';
@@ -15,9 +15,11 @@ import { getCharacterDiff } from './lib/diffEngine';
 // ---------------------------------------------------------------------------
 let doc = null;
 let snapshots = [];
+let visibleSnapshots = [];
 let selectedRow = -1;
+let filterDeleteOnly = false;
 let lastSavedContent = '';
-let modified = false; // 에디터 내용이 마지막 커밋과 다름
+let modified = false;
 // ---------------------------------------------------------------------------
 // DOM 참조
 // ---------------------------------------------------------------------------
@@ -28,6 +30,7 @@ function el(id) {
     return e;
 }
 const statusBar = el('status-bar');
+const pageBar = el('page-bar');
 const editor = el('editor');
 const saveBtn = el('save-btn');
 const saveFileBtn = el('save-file-btn');
@@ -37,6 +40,9 @@ const copyBtn = el('copy-btn');
 const historyList = el('history-list');
 const diffView = el('diff-view');
 const restoreBtn = el('restore-btn');
+const filterDelBtn = el('filter-del-btn');
+const prevSnapBtn = el('prev-snap-btn');
+const nextSnapBtn = el('next-snap-btn');
 const ctxMenu = el('ctx-menu');
 const ctxEdit = el('ctx-edit');
 // ---------------------------------------------------------------------------
@@ -46,19 +52,17 @@ async function openFile() {
     const [handle] = await window.showOpenFilePicker({
         types: [{ description: 'Memit 파일', accept: { 'application/json': ['.memit'] } }],
     });
-    doc = await MemitDocument.load(handle);
+    doc = await MemitDocument.loadFromFile(handle);
+    await doc.saveToDb(); // IDB 갱신
     initApp();
 }
 async function newFile() {
-    const handle = await window.showSaveFilePicker({
-        suggestedName: 'notes.memit',
-        types: [{ description: 'Memit 파일', accept: { 'application/json': ['.memit'] } }],
-    });
-    doc = await MemitDocument.create(handle);
+    doc = MemitDocument.createNew();
+    await doc.saveToDb();
     initApp();
 }
 // ---------------------------------------------------------------------------
-// 앱 초기화 (파일 열린 후)
+// 앱 초기화 (문서 준비된 후)
 // ---------------------------------------------------------------------------
 function initApp() {
     if (!doc)
@@ -66,50 +70,244 @@ function initApp() {
     document.getElementById('landing').style.display = 'none';
     document.getElementById('app').style.display = 'flex';
     document.title = `${doc.fileName} - Memit Memo`;
+    loadCurrentPage();
+}
+function loadCurrentPage() {
+    if (!doc)
+        return;
     const content = doc.getContent();
     editor.value = content;
     lastSavedContent = content;
+    _preChangeContent = content;
     modified = false;
+    renderPageBar();
     refreshHistory();
     updateStatus();
 }
 // ---------------------------------------------------------------------------
-// 편집 감지
+// 페이지 탭 렌더링
 // ---------------------------------------------------------------------------
+function renderPageBar() {
+    if (!doc)
+        return;
+    pageBar.innerHTML = '';
+    doc.getPages().forEach((page, idx) => {
+        const tab = document.createElement('div');
+        tab.className = 'page-tab' + (idx === doc.getCurrentPageIdx() ? ' active' : '');
+        tab.dataset.idx = String(idx);
+        tab.textContent = page.title;
+        tab.title = page.title;
+        tab.addEventListener('click', () => switchPage(idx));
+        tab.addEventListener('dblclick', e => { e.stopPropagation(); renamePage(page.id); });
+        tab.addEventListener('contextmenu', e => showPageCtxMenu(e, idx));
+        pageBar.appendChild(tab);
+    });
+    const addBtn = document.createElement('button');
+    addBtn.className = 'page-add-btn';
+    addBtn.textContent = '+';
+    addBtn.title = '새 페이지 추가';
+    addBtn.addEventListener('click', addPage);
+    pageBar.appendChild(addBtn);
+}
+// ---------------------------------------------------------------------------
+// 페이지 전환
+// ---------------------------------------------------------------------------
+function switchPage(idx) {
+    if (!doc)
+        return;
+    // 현재 에디터 상태를 커밋하지 않고 전환 (modified 상태는 버림)
+    doc.switchToPage(idx);
+    loadCurrentPage();
+}
+// ---------------------------------------------------------------------------
+// 페이지 추가
+// ---------------------------------------------------------------------------
+async function addPage() {
+    if (!doc)
+        return;
+    const page = doc.addPage();
+    doc.switchToPage(doc.getPages().length - 1);
+    await doc.saveToDb();
+    loadCurrentPage();
+    flashStatus(`페이지 "${page.title}" 추가됨`);
+}
+// ---------------------------------------------------------------------------
+// 페이지 이름 변경
+// ---------------------------------------------------------------------------
+async function renamePage(pageId) {
+    if (!doc)
+        return;
+    const page = doc.getPages().find(p => p.id === pageId);
+    if (!page)
+        return;
+    const newTitle = await promptDialog('페이지 제목을 입력하세요:', page.title);
+    if (newTitle === null || !newTitle.trim())
+        return;
+    doc.setPageTitle(pageId, newTitle.trim());
+    await doc.saveToDb();
+    renderPageBar();
+    updateStatus();
+    flashStatus(`페이지 이름 변경됨: "${newTitle.trim()}"`);
+}
+// ---------------------------------------------------------------------------
+// 페이지 삭제
+// ---------------------------------------------------------------------------
+async function deletePage(idx) {
+    if (!doc)
+        return;
+    const page = doc.getPages()[idx];
+    if (!page)
+        return;
+    if (doc.getPages().length <= 1) {
+        alert('마지막 페이지는 삭제할 수 없습니다.');
+        return;
+    }
+    const ok = confirm(`"${page.title}" 페이지를 삭제할까요?\n스냅샷이 모두 사라집니다.`);
+    if (!ok)
+        return;
+    doc.deletePage(page.id);
+    await doc.saveToDb();
+    loadCurrentPage();
+    flashStatus(`페이지 삭제됨`);
+}
+// ---------------------------------------------------------------------------
+// 페이지 컨텍스트 메뉴
+// ---------------------------------------------------------------------------
+let pageCtxIdx = -1;
+const pageCtxMenu = el('page-ctx-menu');
+const pageCtxRename = el('page-ctx-rename');
+const pageCtxDelete = el('page-ctx-delete');
+function showPageCtxMenu(e, idx) {
+    e.preventDefault();
+    pageCtxIdx = idx;
+    pageCtxMenu.style.display = 'block';
+    pageCtxMenu.style.left = `${e.clientX}px`;
+    pageCtxMenu.style.top = `${e.clientY}px`;
+}
+pageCtxRename.addEventListener('click', () => {
+    hidePageCtxMenu();
+    if (pageCtxIdx < 0 || !doc)
+        return;
+    const page = doc.getPages()[pageCtxIdx];
+    if (page)
+        renamePage(page.id);
+});
+pageCtxDelete.addEventListener('click', () => {
+    hidePageCtxMenu();
+    deletePage(pageCtxIdx);
+});
+function hidePageCtxMenu() { pageCtxMenu.style.display = 'none'; }
+// ---------------------------------------------------------------------------
+// 편집 감지 — 버퍼 + 트리거 기반 자동 커밋
+// ---------------------------------------------------------------------------
+const POST_DELETION_DELAY = 1500;
+let _preChangeContent = '';
+let _inDeletionSeq = false;
+let _postDeletionTimer = null;
+function schedulePostDeletionCommit() {
+    if (_postDeletionTimer)
+        clearTimeout(_postDeletionTimer);
+    _postDeletionTimer = setTimeout(async () => {
+        _postDeletionTimer = null;
+        _inDeletionSeq = false;
+        if (modified)
+            await saveAndCommit(undefined, true);
+    }, POST_DELETION_DELAY);
+}
+function cancelPostDeletionCommit() {
+    if (_postDeletionTimer) {
+        clearTimeout(_postDeletionTimer);
+        _postDeletionTimer = null;
+    }
+}
+function isCompletionChar(current, prev) {
+    if (current.length <= prev.length)
+        return false;
+    const last = current[current.length - 1];
+    const second = current.length >= 2 ? current[current.length - 2] : '';
+    if (last === '\n' && second !== '\n')
+        return true;
+    if ('.!?。'.includes(last) && last !== second)
+        return true;
+    return false;
+}
 editor.addEventListener('input', () => {
-    if (editor.value !== lastSavedContent) {
+    const current = editor.value;
+    const prev = _preChangeContent;
+    _preChangeContent = current;
+    if (current !== lastSavedContent) {
         modified = true;
         updateStatus();
     }
+    if (current.length < prev.length) {
+        if (!_inDeletionSeq) {
+            _inDeletionSeq = true;
+            if (prev !== lastSavedContent)
+                saveAndCommit(prev, true);
+        }
+        schedulePostDeletionCommit();
+    }
+    else {
+        _inDeletionSeq = false;
+        cancelPostDeletionCommit();
+        if (isCompletionChar(current, prev))
+            saveAndCommit(undefined, true);
+    }
 });
 // ---------------------------------------------------------------------------
-// Ctrl+S → IndexedDB 커밋
-// Ctrl+Shift+S → 파일에 저장
+// 키보드 단축키
 // ---------------------------------------------------------------------------
 document.addEventListener('keydown', e => {
-    if (!(e.ctrlKey || e.metaKey))
+    if (e.ctrlKey || e.metaKey) {
+        const key = e.key.toLowerCase();
+        if (key === 's' && e.shiftKey) {
+            e.preventDefault();
+            saveToFile();
+        }
+        else if (key === 's') {
+            e.preventDefault();
+            saveAndCommit();
+        }
         return;
-    const key = e.key.toLowerCase();
-    if (key === 's' && e.shiftKey) {
-        e.preventDefault();
-        saveToFile();
     }
-    else if (key === 's') {
-        e.preventDefault();
-        saveAndCommit();
+    if (e.altKey) {
+        if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            navigateHistory(-1);
+        }
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            navigateHistory(1);
+        }
     }
 });
-saveBtn.addEventListener('click', saveAndCommit);
-saveFileBtn.addEventListener('click', saveToFile);
+function navigateHistory(dir) {
+    if (visibleSnapshots.length === 0)
+        return;
+    const next = selectedRow < 0
+        ? (dir === 1 ? 0 : visibleSnapshots.length - 1)
+        : Math.max(0, Math.min(visibleSnapshots.length - 1, selectedRow + dir));
+    selectRow(next);
+}
+filterDelBtn.addEventListener('click', () => {
+    filterDeleteOnly = !filterDeleteOnly;
+    filterDelBtn.classList.toggle('active', filterDeleteOnly);
+    refreshHistory();
+});
+prevSnapBtn.addEventListener('click', () => navigateHistory(-1));
+nextSnapBtn.addEventListener('click', () => navigateHistory(1));
+saveBtn.addEventListener('click', () => saveAndCommit());
+saveFileBtn.addEventListener('click', () => saveToFile());
 // ---------------------------------------------------------------------------
-// 커밋 → IndexedDB만
+// 커밋 → IndexedDB
 // ---------------------------------------------------------------------------
-async function saveAndCommit() {
+async function saveAndCommit(contentOverride, silent = false) {
     if (!doc)
         return;
-    const newContent = editor.value;
+    cancelPostDeletionCommit();
+    const newContent = contentOverride ?? editor.value;
     let message;
-    if (customMsgChk.checked) {
+    if (!silent && customMsgChk.checked) {
         const msg = await promptDialog('커밋 메시지를 입력하세요:', '');
         if (msg === null)
             return;
@@ -122,13 +320,15 @@ async function saveAndCommit() {
         const [success, resultMsg] = await doc.commit(newContent, message);
         if (success) {
             lastSavedContent = newContent;
-            modified = false;
+            modified = (editor.value !== newContent);
             const prefix = resultMsg.includes('Amended') ? '✓ Amended' : '✓ Saved';
             refreshHistory();
-            flashStatus(`${prefix}: ${resultMsg}`);
+            if (!silent)
+                flashStatus(`${prefix}: ${resultMsg}`);
         }
         else {
-            flashStatus(`ℹ ${resultMsg}`);
+            if (!silent)
+                flashStatus(`ℹ ${resultMsg}`);
         }
     }
     catch (e) {
@@ -136,14 +336,16 @@ async function saveAndCommit() {
     }
 }
 // ---------------------------------------------------------------------------
-// 파일에 저장 → 실제 .memit 파일 쓰기
+// 파일에 저장
 // ---------------------------------------------------------------------------
 async function saveToFile() {
     if (!doc)
         return;
     try {
         await doc.saveToFile();
-        flashStatus(`✓ 파일에 저장됨: ${doc.fileName}`);
+        document.title = `${doc.fileName} - Memit Memo`;
+        flashStatus(`파일에 저장됨: ${doc.fileName}`);
+        updateStatus();
     }
     catch (e) {
         if (e.name !== 'AbortError')
@@ -195,14 +397,14 @@ function autoMessage(newContent) {
 // ---------------------------------------------------------------------------
 copyBtn.addEventListener('click', () => {
     navigator.clipboard.writeText(editor.value);
-    flashStatus('✓ 클립보드에 복사됨');
+    flashStatus('클립보드에 복사됨');
 });
 exportBtn.addEventListener('click', async () => {
     if (!doc)
         return;
     try {
         await doc.exportTxt();
-        flashStatus('✓ TXT 저장됨');
+        flashStatus('TXT 저장됨');
     }
     catch (e) {
         if (e.name !== 'AbortError')
@@ -220,18 +422,21 @@ function refreshHistory() {
     selectedRow = -1;
     restoreBtn.disabled = true;
     diffView.innerHTML = '';
-    if (snapshots.length === 0) {
+    visibleSnapshots = snapshots
+        .map((snap, origIndex) => ({ snap, origIndex }))
+        .filter(({ snap, origIndex }) => !filterDeleteOnly || ['delete', 'mixed'].includes(getChangeType(snap, origIndex)));
+    if (visibleSnapshots.length === 0) {
         const li = document.createElement('li');
-        li.textContent = 'No snapshots yet';
+        li.textContent = snapshots.length === 0 ? 'No snapshots yet' : '삭제 이력 없음';
         li.style.color = '#666';
         historyList.appendChild(li);
         return;
     }
-    snapshots.forEach((snap, i) => {
+    visibleSnapshots.forEach(({ snap, origIndex }, i) => {
         const li = document.createElement('li');
         li.dataset.row = String(i);
         li.textContent = formatSnapEntry(snap);
-        const changeType = getChangeType(snap, i);
+        const changeType = getChangeType(snap, origIndex);
         if (changeType === 'insert')
             li.style.background = '#1a3d1a';
         else if (changeType === 'delete')
@@ -274,12 +479,16 @@ function getChangeType(snap, index) {
     }
 }
 function selectRow(row) {
+    if (row < 0 || row >= visibleSnapshots.length)
+        return;
     historyList.querySelectorAll('li.selected').forEach(el => el.classList.remove('selected'));
     selectedRow = row;
-    historyList.querySelector(`li[data-row="${row}"]`)?.classList.add('selected');
+    const li = historyList.querySelector(`li[data-row="${row}"]`);
+    li?.classList.add('selected');
+    li?.scrollIntoView({ block: 'nearest' });
     restoreBtn.disabled = false;
-    const snap = snapshots[row];
-    const oldContent = row + 1 < snapshots.length ? snapshots[row + 1].content : '';
+    const { snap, origIndex } = visibleSnapshots[row];
+    const oldContent = origIndex + 1 < snapshots.length ? snapshots[origIndex + 1].content : '';
     showDiff(oldContent, snap.content);
 }
 // ---------------------------------------------------------------------------
@@ -310,9 +519,9 @@ function showDiff(oldContent, newContent) {
 // 버전 복원
 // ---------------------------------------------------------------------------
 restoreBtn.addEventListener('click', async () => {
-    if (selectedRow < 0 || selectedRow >= snapshots.length)
+    if (selectedRow < 0 || selectedRow >= visibleSnapshots.length)
         return;
-    const snap = snapshots[selectedRow];
+    const { snap } = visibleSnapshots[selectedRow];
     const ok = confirm(`Snapshot #${snap.id}을 복원할까요?\n\n` +
         `메시지: ${snap.message}\n시간: ${snap.timestamp}\n\n` +
         '현재 저장되지 않은 내용은 사라집니다.');
@@ -325,7 +534,7 @@ restoreBtn.addEventListener('click', async () => {
     alert(`Snapshot #${snap.id}이 에디터에 복원되었습니다.\n저장하려면 Save 버튼을 누르세요.`);
 });
 // ---------------------------------------------------------------------------
-// 컨텍스트 메뉴
+// 컨텍스트 메뉴 (히스토리)
 // ---------------------------------------------------------------------------
 let ctxRow = -1;
 function showCtxMenu(e, row) {
@@ -337,19 +546,23 @@ function showCtxMenu(e, row) {
 }
 ctxEdit.addEventListener('click', async () => {
     hideCtxMenu();
-    if (ctxRow < 0 || ctxRow >= snapshots.length || !doc)
+    if (ctxRow < 0 || ctxRow >= visibleSnapshots.length || !doc)
         return;
-    const snap = snapshots[ctxRow];
+    const { snap } = visibleSnapshots[ctxRow];
     const newMsg = await promptDialog(`Snapshot #${snap.id}의 메시지를 수정:`, snap.message);
     if (newMsg === null || !newMsg.trim() || newMsg.trim() === snap.message)
         return;
     await doc.updateMessage(snap.id, newMsg.trim());
-    setStatus(`✓ Snapshot #${snap.id} 메시지 수정됨`);
+    setStatus(`Snapshot #${snap.id} 메시지 수정됨`);
     refreshHistory();
 });
-document.addEventListener('click', () => hideCtxMenu());
-document.addEventListener('keydown', e => { if (e.key === 'Escape')
-    hideCtxMenu(); });
+document.addEventListener('click', () => { hideCtxMenu(); hidePageCtxMenu(); });
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+        hideCtxMenu();
+        hidePageCtxMenu();
+    }
+});
 function hideCtxMenu() { ctxMenu.style.display = 'none'; }
 // ---------------------------------------------------------------------------
 // 커스텀 다이얼로그
@@ -403,24 +616,23 @@ function updateStatus() {
     if (!doc)
         return;
     const snaps = doc.getSnapshots();
+    const page = doc.getCurrentPage();
     let status;
+    status = `[${page.title}] `;
     if (snaps.length > 0) {
         const last = snaps.at(-1);
-        status = `Snapshot #${last.id}: ${last.message}`;
+        status += `Snapshot #${last.id}: ${last.message}`;
         status += modified ? ' | ✏️ 수정중' : ' | ✓';
     }
     else {
-        status = modified ? '✏️ 수정중 (스냅샷 없음)' : 'No snapshots yet';
+        status += modified ? '✏️ 수정중 (스냅샷 없음)' : 'No snapshots yet';
     }
-    // 파일 저장 상태 표시
     status += doc.dirtyToFile ? ' | 💾 파일 미저장' : ' | 📁 파일 저장됨';
     setStatus(`Status: ${status}`);
-    // 파일 저장 버튼 강조
     saveFileBtn.style.borderColor = doc.dirtyToFile ? '#f0a500' : '';
 }
 function setStatus(text) { statusBar.textContent = text; }
 let _flashTimer = null;
-/** 2초간 메시지를 보여준 뒤 상태 표시로 복귀 */
 function flashStatus(text) {
     if (_flashTimer)
         clearTimeout(_flashTimer);
@@ -461,8 +673,18 @@ if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js');
 }
 // ---------------------------------------------------------------------------
-// 랜딩 버튼
+// 랜딩: 세션 복원 시도 후 버튼 이벤트 등록
 // ---------------------------------------------------------------------------
+(async () => {
+    const restored = await MemitDocument.restoreSession();
+    if (restored) {
+        doc = restored;
+        initApp();
+        return;
+    }
+    // 복원 실패 시 랜딩 표시
+    document.getElementById('landing').style.display = 'flex';
+})();
 document.getElementById('btn-open').addEventListener('click', async () => {
     try {
         await openFile();
@@ -478,6 +700,6 @@ document.getElementById('btn-new').addEventListener('click', async () => {
     }
     catch (e) {
         if (e.name !== 'AbortError')
-            alert(`파일 만들기 실패: ${e}`);
+            alert(`만들기 실패: ${e}`);
     }
 });

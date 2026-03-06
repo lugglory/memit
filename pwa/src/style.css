@@ -42,6 +42,56 @@ html, body {
   text-overflow: ellipsis;
 }
 
+/* ─── Page bar ─── */
+#page-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  overflow-x: auto;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 4px;
+  scrollbar-width: thin;
+}
+
+.page-tab {
+  padding: 3px 14px;
+  background: var(--widget);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+  user-select: none;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #aaa;
+  transition: background 0.1s, color 0.1s;
+}
+.page-tab:hover { background: #3a3a3a; color: var(--fg); }
+.page-tab.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.page-add-btn {
+  padding: 3px 10px;
+  font-size: 16px;
+  line-height: 1;
+  min-height: unset;
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 3px;
+  color: #666;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.page-add-btn:hover { background: #3a3a3a; color: var(--fg); border-style: solid; }
+
 /* ─── Splitter ─── */
 #splitter {
   display: flex;
@@ -237,7 +287,8 @@ label input[type="checkbox"] { accent-color: var(--accent); width: 14px; height:
 ::-webkit-scrollbar-thumb:hover { background: #7a7a7a; }
 
 /* ─── Context menu ─── */
-#ctx-menu {
+#ctx-menu,
+#page-ctx-menu {
   position: fixed;
   background: var(--panel-bg);
   border: 1px solid var(--border);
@@ -247,12 +298,14 @@ label input[type="checkbox"] { accent-color: var(--accent); width: 14px; height:
   min-width: 140px;
   box-shadow: 0 4px 12px rgba(0,0,0,0.5);
 }
-#ctx-menu div {
+#ctx-menu div,
+#page-ctx-menu div {
   padding: 6px 16px;
   cursor: pointer;
   font-size: 13px;
 }
-#ctx-menu div:hover { background: var(--accent); }
+#ctx-menu div:hover,
+#page-ctx-menu div:hover { background: var(--accent); }
 
 /* ─── Dialog overlay ─── */
 .dialog-overlay {

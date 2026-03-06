@@ -2,9 +2,9 @@
  * main.ts — Memit PWA 메인 UI
  *
  * 저장 전략:
- *   Ctrl+S   → IndexedDB에 커밋 (빠름)
+ *   Ctrl+S            → IndexedDB에 커밋
  *   Ctrl+Shift+S / "파일에 저장" 버튼 → 실제 .memit 파일에 쓰기
- *   탭 닫기 전 → 저장되지 않은 파일 변경이 있으면 경고
+ *   탭 닫기 전        → 저장되지 않은 파일 변경이 있으면 경고
  */
 
 import './style.css';
@@ -19,10 +19,10 @@ import { getCharacterDiff } from './lib/diffEngine';
 let doc: MemitDocument | null = null;
 let snapshots: MemitSnapshot[] = [];
 let visibleSnapshots: { snap: MemitSnapshot; origIndex: number }[] = [];
-let selectedRow = -1;         // visibleSnapshots 내 인덱스
+let selectedRow = -1;
 let filterDeleteOnly = false;
 let lastSavedContent = '';
-let modified = false;         // 에디터 내용이 마지막 커밋과 다름
+let modified = false;
 
 // ---------------------------------------------------------------------------
 // DOM 참조
@@ -35,20 +35,21 @@ function el<T extends HTMLElement>(id: string): T {
 }
 
 const statusBar    = el('status-bar');
+const pageBar      = el('page-bar');
 const editor       = el<HTMLTextAreaElement>('editor');
 const saveBtn      = el<HTMLButtonElement>('save-btn');
 const saveFileBtn  = el<HTMLButtonElement>('save-file-btn');
 const customMsgChk = el<HTMLInputElement>('custom-msg');
 const exportBtn    = el<HTMLButtonElement>('export-btn');
 const copyBtn      = el<HTMLButtonElement>('copy-btn');
-const historyList   = el<HTMLUListElement>('history-list');
-const diffView      = el<HTMLDivElement>('diff-view');
-const restoreBtn    = el<HTMLButtonElement>('restore-btn');
-const filterDelBtn  = el<HTMLButtonElement>('filter-del-btn');
-const prevSnapBtn   = el<HTMLButtonElement>('prev-snap-btn');
-const nextSnapBtn   = el<HTMLButtonElement>('next-snap-btn');
-const ctxMenu       = el<HTMLDivElement>('ctx-menu');
-const ctxEdit       = el<HTMLDivElement>('ctx-edit');
+const historyList  = el<HTMLUListElement>('history-list');
+const diffView     = el<HTMLDivElement>('diff-view');
+const restoreBtn   = el<HTMLButtonElement>('restore-btn');
+const filterDelBtn = el<HTMLButtonElement>('filter-del-btn');
+const prevSnapBtn  = el<HTMLButtonElement>('prev-snap-btn');
+const nextSnapBtn  = el<HTMLButtonElement>('next-snap-btn');
+const ctxMenu      = el<HTMLDivElement>('ctx-menu');
+const ctxEdit      = el<HTMLDivElement>('ctx-edit');
 
 // ---------------------------------------------------------------------------
 // 파일 열기 / 만들기
@@ -58,21 +59,19 @@ async function openFile() {
   const [handle] = await window.showOpenFilePicker({
     types: [{ description: 'Memit 파일', accept: { 'application/json': ['.memit'] } }],
   });
-  doc = await MemitDocument.load(handle);
+  doc = await MemitDocument.loadFromFile(handle);
+  await doc.saveToDb();   // IDB 갱신
   initApp();
 }
 
 async function newFile() {
-  const handle = await window.showSaveFilePicker({
-    suggestedName: 'notes.memit',
-    types: [{ description: 'Memit 파일', accept: { 'application/json': ['.memit'] } }],
-  });
-  doc = await MemitDocument.create(handle);
+  doc = MemitDocument.createNew();
+  await doc.saveToDb();
   initApp();
 }
 
 // ---------------------------------------------------------------------------
-// 앱 초기화 (파일 열린 후)
+// 앱 초기화 (문서 준비된 후)
 // ---------------------------------------------------------------------------
 
 function initApp() {
@@ -81,32 +80,161 @@ function initApp() {
   document.getElementById('app')!.style.display = 'flex';
   document.title = `${doc.fileName} - Memit Memo`;
 
+  loadCurrentPage();
+}
+
+function loadCurrentPage() {
+  if (!doc) return;
   const content = doc.getContent();
   editor.value = content;
   lastSavedContent = content;
   _preChangeContent = content;
   modified = false;
 
+  renderPageBar();
   refreshHistory();
   updateStatus();
 }
 
 // ---------------------------------------------------------------------------
-// 편집 감지 — 버퍼 + 트리거 기반 자동 커밋
-//
-//   버퍼(_preChangeContent): 매 input마다 갱신 (문자열 복사, 저렴)
-//   커밋 트리거:
-//     ① 삭제 감지  → 직전 버퍼 즉시 커밋 + 삭제 완료 후 debounce 커밋
-//     ② 완성 입력  → 개행(새 단락), 문장 부호(.!?。) 입력 시 즉시 커밋
-//        단, 연속 동일 문자(..  ↵↵)는 무시
-//     ③ 수동       → Ctrl+S
+// 페이지 탭 렌더링
 // ---------------------------------------------------------------------------
 
-const POST_DELETION_DELAY = 1500; // ms — 삭제 완료 후 커밋 대기
+function renderPageBar() {
+  if (!doc) return;
+  pageBar.innerHTML = '';
 
-let _preChangeContent = '';  // 버퍼: 마지막 입력 직전 내용
+  doc.getPages().forEach((page, idx) => {
+    const tab = document.createElement('div');
+    tab.className = 'page-tab' + (idx === doc!.getCurrentPageIdx() ? ' active' : '');
+    tab.dataset.idx = String(idx);
+    tab.textContent = page.title;
+    tab.title = page.title;
+    tab.addEventListener('click', () => switchPage(idx));
+    tab.addEventListener('dblclick', e => { e.stopPropagation(); renamePage(page.id); });
+    tab.addEventListener('contextmenu', e => showPageCtxMenu(e, idx));
+    pageBar.appendChild(tab);
+  });
+
+  const addBtn = document.createElement('button');
+  addBtn.className = 'page-add-btn';
+  addBtn.textContent = '+';
+  addBtn.title = '새 페이지 추가';
+  addBtn.addEventListener('click', addPage);
+  pageBar.appendChild(addBtn);
+}
+
+// ---------------------------------------------------------------------------
+// 페이지 전환
+// ---------------------------------------------------------------------------
+
+function switchPage(idx: number) {
+  if (!doc) return;
+  // 현재 에디터 상태를 커밋하지 않고 전환 (modified 상태는 버림)
+  doc.switchToPage(idx);
+  loadCurrentPage();
+}
+
+// ---------------------------------------------------------------------------
+// 페이지 추가
+// ---------------------------------------------------------------------------
+
+async function addPage() {
+  if (!doc) return;
+  const page = doc.addPage();
+  doc.switchToPage(doc.getPages().length - 1);
+  await doc.saveToDb();
+  loadCurrentPage();
+  flashStatus(`페이지 "${page.title}" 추가됨`);
+}
+
+// ---------------------------------------------------------------------------
+// 페이지 이름 변경
+// ---------------------------------------------------------------------------
+
+async function renamePage(pageId: number) {
+  if (!doc) return;
+  const page = doc.getPages().find(p => p.id === pageId);
+  if (!page) return;
+  const newTitle = await promptDialog('페이지 제목을 입력하세요:', page.title);
+  if (newTitle === null || !newTitle.trim()) return;
+  doc.setPageTitle(pageId, newTitle.trim());
+  await doc.saveToDb();
+  renderPageBar();
+  updateStatus();
+  flashStatus(`페이지 이름 변경됨: "${newTitle.trim()}"`);
+}
+
+// ---------------------------------------------------------------------------
+// 페이지 삭제
+// ---------------------------------------------------------------------------
+
+async function deletePage(idx: number) {
+  if (!doc) return;
+  const page = doc.getPages()[idx];
+  if (!page) return;
+  if (doc.getPages().length <= 1) {
+    alert('마지막 페이지는 삭제할 수 없습니다.');
+    return;
+  }
+  const ok = confirm(`"${page.title}" 페이지를 삭제할까요?\n스냅샷이 모두 사라집니다.`);
+  if (!ok) return;
+  doc.deletePage(page.id);
+  await doc.saveToDb();
+  loadCurrentPage();
+  flashStatus(`페이지 삭제됨`);
+}
+
+// ---------------------------------------------------------------------------
+// 페이지 컨텍스트 메뉴
+// ---------------------------------------------------------------------------
+
+let pageCtxIdx = -1;
+const pageCtxMenu    = el<HTMLDivElement>('page-ctx-menu');
+const pageCtxRename  = el<HTMLDivElement>('page-ctx-rename');
+const pageCtxDelete  = el<HTMLDivElement>('page-ctx-delete');
+
+function showPageCtxMenu(e: MouseEvent, idx: number) {
+  e.preventDefault();
+  pageCtxIdx = idx;
+  pageCtxMenu.style.display = 'block';
+  pageCtxMenu.style.left = `${e.clientX}px`;
+  pageCtxMenu.style.top  = `${e.clientY}px`;
+}
+
+pageCtxRename.addEventListener('click', () => {
+  hidePageCtxMenu();
+  if (pageCtxIdx < 0 || !doc) return;
+  const page = doc.getPages()[pageCtxIdx];
+  if (page) renamePage(page.id);
+});
+
+pageCtxDelete.addEventListener('click', () => {
+  hidePageCtxMenu();
+  deletePage(pageCtxIdx);
+});
+
+function hidePageCtxMenu() { pageCtxMenu.style.display = 'none'; }
+
+// ---------------------------------------------------------------------------
+// 편집 감지 — 버퍼 + 트리거 기반 자동 커밋
+// ---------------------------------------------------------------------------
+
+const POST_DELETION_DELAY = 1500;
+
+let _preChangeContent = '';
 let _inDeletionSeq    = false;
 let _postDeletionTimer: ReturnType<typeof setTimeout> | null = null;
+let _composing        = false;  // IME 조합 중 여부
+
+editor.addEventListener('compositionstart', () => { _composing = true; });
+editor.addEventListener('compositionend',   () => {
+  _composing = false;
+  // 조합 완료 후 완성 입력 판단을 한 번 실행
+  const current = editor.value;
+  if (isCompletionChar(current, _preChangeContent)) saveAndCommit(undefined, true);
+  _preChangeContent = current;
+});
 
 function schedulePostDeletionCommit() {
   if (_postDeletionTimer) clearTimeout(_postDeletionTimer);
@@ -121,51 +249,53 @@ function cancelPostDeletionCommit() {
   if (_postDeletionTimer) { clearTimeout(_postDeletionTimer); _postDeletionTimer = null; }
 }
 
-/** 완성 입력 감지: 단락 개행 또는 문장 부호 (연속 동일 문자 제외) */
 function isCompletionChar(current: string, prev: string): boolean {
   if (current.length <= prev.length) return false;
   const last   = current[current.length - 1];
   const second = current.length >= 2 ? current[current.length - 2] : '';
-  if (last === '\n'             && second !== '\n')   return true;
-  if ('.!?。'.includes(last)   && last   !== second) return true;
+  if (last === '\n'            && second !== '\n')   return true;
+  if ('.!?。'.includes(last)  && last   !== second) return true;
   return false;
 }
 
 editor.addEventListener('input', () => {
   const current = editor.value;
   const prev    = _preChangeContent;
-  _preChangeContent = current;  // 버퍼 갱신 (저렴)
+
+  // IME 조합 중에는 버퍼만 갱신하고 커밋 트리거 금지
+  if (_composing) {
+    if (current !== lastSavedContent) { modified = true; updateStatus(); }
+    return;
+  }
+
+  _preChangeContent = current;
 
   if (current !== lastSavedContent) { modified = true; updateStatus(); }
 
   if (current.length < prev.length) {
-    // 삭제 감지
     if (!_inDeletionSeq) {
       _inDeletionSeq = true;
-      if (prev !== lastSavedContent) saveAndCommit(prev, true);  // 직전 상태 커밋
+      if (prev !== lastSavedContent) saveAndCommit(prev, true);
     }
     schedulePostDeletionCommit();
   } else {
     _inDeletionSeq = false;
     cancelPostDeletionCommit();
-    if (isCompletionChar(current, prev)) saveAndCommit(undefined, true);  // 완성 입력 커밋
+    if (isCompletionChar(current, prev)) saveAndCommit(undefined, true);
   }
 });
 
 // ---------------------------------------------------------------------------
-// Ctrl+S → IndexedDB 커밋
-// Ctrl+Shift+S → 파일에 저장
+// 키보드 단축키
 // ---------------------------------------------------------------------------
 
 document.addEventListener('keydown', e => {
-  // Ctrl+S / Ctrl+Shift+S
   if (e.ctrlKey || e.metaKey) {
     const key = e.key.toLowerCase();
     if (key === 's' && e.shiftKey)  { e.preventDefault(); saveToFile(); }
     else if (key === 's')           { e.preventDefault(); saveAndCommit(); }
     return;
   }
-  // Alt+↑/↓ — 히스토리 순회
   if (e.altKey) {
     if (e.key === 'ArrowUp')   { e.preventDefault(); navigateHistory(-1); }
     if (e.key === 'ArrowDown') { e.preventDefault(); navigateHistory(1); }
@@ -189,11 +319,11 @@ filterDelBtn.addEventListener('click', () => {
 prevSnapBtn.addEventListener('click', () => navigateHistory(-1));
 nextSnapBtn.addEventListener('click', () => navigateHistory(1));
 
-saveBtn.addEventListener('click', saveAndCommit);
-saveFileBtn.addEventListener('click', saveToFile);
+saveBtn.addEventListener('click', () => saveAndCommit());
+saveFileBtn.addEventListener('click', () => saveToFile());
 
 // ---------------------------------------------------------------------------
-// 커밋 → IndexedDB만
+// 커밋 → IndexedDB
 // ---------------------------------------------------------------------------
 
 async function saveAndCommit(contentOverride?: string, silent = false) {
@@ -214,7 +344,7 @@ async function saveAndCommit(contentOverride?: string, silent = false) {
     const [success, resultMsg] = await doc.commit(newContent, message);
     if (success) {
       lastSavedContent = newContent;
-      modified = (editor.value !== newContent);  // contentOverride 커밋 후에도 에디터는 다를 수 있음
+      modified = (editor.value !== newContent);
       const prefix = resultMsg.includes('Amended') ? '✓ Amended' : '✓ Saved';
       refreshHistory();
       if (!silent) flashStatus(`${prefix}: ${resultMsg}`);
@@ -227,14 +357,16 @@ async function saveAndCommit(contentOverride?: string, silent = false) {
 }
 
 // ---------------------------------------------------------------------------
-// 파일에 저장 → 실제 .memit 파일 쓰기
+// 파일에 저장
 // ---------------------------------------------------------------------------
 
 async function saveToFile() {
   if (!doc) return;
   try {
     await doc.saveToFile();
-    flashStatus(`✓ 파일에 저장됨: ${doc.fileName}`);
+    document.title = `${doc.fileName} - Memit Memo`;
+    flashStatus(`파일에 저장됨: ${doc.fileName}`);
+    updateStatus();
   } catch (e) {
     if ((e as Error).name !== 'AbortError') alert(`파일 저장 실패: ${e}`);
   }
@@ -292,14 +424,14 @@ function autoMessage(newContent: string): string {
 
 copyBtn.addEventListener('click', () => {
   navigator.clipboard.writeText(editor.value);
-  flashStatus('✓ 클립보드에 복사됨');
+  flashStatus('클립보드에 복사됨');
 });
 
 exportBtn.addEventListener('click', async () => {
   if (!doc) return;
   try {
     await doc.exportTxt();
-    flashStatus('✓ TXT 저장됨');
+    flashStatus('TXT 저장됨');
   } catch (e) {
     if ((e as Error).name !== 'AbortError') alert(`저장 실패: ${e}`);
   }
@@ -317,7 +449,6 @@ function refreshHistory() {
   restoreBtn.disabled = true;
   diffView.innerHTML = '';
 
-  // 필터 적용
   visibleSnapshots = snapshots
     .map((snap, origIndex) => ({ snap, origIndex }))
     .filter(({ snap, origIndex }) =>
@@ -432,7 +563,7 @@ restoreBtn.addEventListener('click', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// 컨텍스트 메뉴
+// 컨텍스트 메뉴 (히스토리)
 // ---------------------------------------------------------------------------
 
 let ctxRow = -1;
@@ -452,12 +583,14 @@ ctxEdit.addEventListener('click', async () => {
   const newMsg = await promptDialog(`Snapshot #${snap.id}의 메시지를 수정:`, snap.message);
   if (newMsg === null || !newMsg.trim() || newMsg.trim() === snap.message) return;
   await doc.updateMessage(snap.id, newMsg.trim());
-  setStatus(`✓ Snapshot #${snap.id} 메시지 수정됨`);
+  setStatus(`Snapshot #${snap.id} 메시지 수정됨`);
   refreshHistory();
 });
 
-document.addEventListener('click',   () => hideCtxMenu());
-document.addEventListener('keydown', e => { if (e.key === 'Escape') hideCtxMenu(); });
+document.addEventListener('click',   () => { hideCtxMenu(); hidePageCtxMenu(); });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { hideCtxMenu(); hidePageCtxMenu(); }
+});
 function hideCtxMenu() { ctxMenu.style.display = 'none'; }
 
 // ---------------------------------------------------------------------------
@@ -518,29 +651,29 @@ function promptDialog(label: string, initial: string): Promise<string | null> {
 
 function updateStatus() {
   if (!doc) return;
-  const snaps = doc.getSnapshots();
+  const snaps    = doc.getSnapshots();
+  const page     = doc.getCurrentPage();
   let status: string;
+
+  status = `[${page.title}] `;
 
   if (snaps.length > 0) {
     const last = snaps.at(-1)!;
-    status = `Snapshot #${last.id}: ${last.message}`;
+    status += `Snapshot #${last.id}: ${last.message}`;
     status += modified ? ' | ✏️ 수정중' : ' | ✓';
   } else {
-    status = modified ? '✏️ 수정중 (스냅샷 없음)' : 'No snapshots yet';
+    status += modified ? '✏️ 수정중 (스냅샷 없음)' : 'No snapshots yet';
   }
 
-  // 파일 저장 상태 표시
   status += doc.dirtyToFile ? ' | 💾 파일 미저장' : ' | 📁 파일 저장됨';
   setStatus(`Status: ${status}`);
 
-  // 파일 저장 버튼 강조
   saveFileBtn.style.borderColor = doc.dirtyToFile ? '#f0a500' : '';
 }
 
 function setStatus(text: string) { statusBar.textContent = text; }
 
 let _flashTimer: ReturnType<typeof setTimeout> | null = null;
-/** 2초간 메시지를 보여준 뒤 상태 표시로 복귀 */
 function flashStatus(text: string) {
   if (_flashTimer) clearTimeout(_flashTimer);
   setStatus(text);
@@ -587,8 +720,19 @@ if ('serviceWorker' in navigator) {
 }
 
 // ---------------------------------------------------------------------------
-// 랜딩 버튼
+// 랜딩: 세션 복원 시도 후 버튼 이벤트 등록
 // ---------------------------------------------------------------------------
+
+(async () => {
+  const restored = await MemitDocument.restoreSession();
+  if (restored) {
+    doc = restored;
+    initApp();
+    return;
+  }
+  // 복원 실패 시 랜딩 표시
+  document.getElementById('landing')!.style.display = 'flex';
+})();
 
 document.getElementById('btn-open')!.addEventListener('click', async () => {
   try { await openFile(); }
@@ -597,5 +741,5 @@ document.getElementById('btn-open')!.addEventListener('click', async () => {
 
 document.getElementById('btn-new')!.addEventListener('click', async () => {
   try { await newFile(); }
-  catch (e) { if ((e as Error).name !== 'AbortError') alert(`파일 만들기 실패: ${e}`); }
+  catch (e) { if ((e as Error).name !== 'AbortError') alert(`만들기 실패: ${e}`); }
 });
