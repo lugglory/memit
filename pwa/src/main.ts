@@ -230,10 +230,7 @@ let _composing        = false;  // IME 조합 중 여부
 editor.addEventListener('compositionstart', () => { _composing = true; });
 editor.addEventListener('compositionend',   () => {
   _composing = false;
-  // 조합 완료 후 완성 입력 판단을 한 번 실행
-  const current = editor.value;
-  if (isCompletionChar(current, _preChangeContent)) saveAndCommit(undefined, true);
-  _preChangeContent = current;
+  _preChangeContent = editor.value;
 });
 
 function schedulePostDeletionCommit() {
@@ -249,20 +246,10 @@ function cancelPostDeletionCommit() {
   if (_postDeletionTimer) { clearTimeout(_postDeletionTimer); _postDeletionTimer = null; }
 }
 
-function isCompletionChar(current: string, prev: string): boolean {
-  if (current.length <= prev.length) return false;
-  const last   = current[current.length - 1];
-  const second = current.length >= 2 ? current[current.length - 2] : '';
-  if (last === '\n'            && second !== '\n')   return true;
-  if ('.!?。'.includes(last)  && last   !== second) return true;
-  return false;
-}
-
 editor.addEventListener('input', () => {
   const current = editor.value;
   const prev    = _preChangeContent;
 
-  // IME 조합 중에는 버퍼만 갱신하고 커밋 트리거 금지
   if (_composing) {
     if (current !== lastSavedContent) { modified = true; updateStatus(); }
     return;
@@ -273,6 +260,7 @@ editor.addEventListener('input', () => {
   if (current !== lastSavedContent) { modified = true; updateStatus(); }
 
   if (current.length < prev.length) {
+    // 삭제 감지: 직전 상태를 즉시 커밋 (삭제 전 내용 보존)
     if (!_inDeletionSeq) {
       _inDeletionSeq = true;
       if (prev !== lastSavedContent) saveAndCommit(prev, true);
@@ -281,7 +269,6 @@ editor.addEventListener('input', () => {
   } else {
     _inDeletionSeq = false;
     cancelPostDeletionCommit();
-    if (isCompletionChar(current, prev)) saveAndCommit(undefined, true);
   }
 });
 
