@@ -20,7 +20,7 @@ let doc: MemitDocument | null = null;
 let snapshots: MemitSnapshot[] = [];
 let visibleSnapshots: { snap: MemitSnapshot; origIndex: number }[] = [];
 let selectedRow = -1;
-let filterDeleteOnly = false;
+let filterDeleteOnly = true;
 let lastSavedContent = '';
 let modified = false;
 
@@ -92,6 +92,7 @@ function loadCurrentPage() {
   modified = false;
 
   renderPageBar();
+  updateFilterBtn();
   refreshHistory();
   updateStatus();
 }
@@ -220,7 +221,7 @@ function hidePageCtxMenu() { pageCtxMenu.style.display = 'none'; }
 // 편집 감지 — 버퍼 + 트리거 기반 자동 커밋
 // ---------------------------------------------------------------------------
 
-const POST_DELETION_DELAY = 1500;
+const POST_DELETION_DELAY = 500;
 
 let _preChangeContent = '';
 let _inDeletionSeq    = false;
@@ -297,9 +298,14 @@ function navigateHistory(dir: 1 | -1) {
   selectRow(next);
 }
 
+function updateFilterBtn() {
+  filterDelBtn.classList.toggle('active', filterDeleteOnly);
+  filterDelBtn.textContent = filterDeleteOnly ? '모두' : '삭제만';
+}
+
 filterDelBtn.addEventListener('click', () => {
   filterDeleteOnly = !filterDeleteOnly;
-  filterDelBtn.classList.toggle('active', filterDeleteOnly);
+  updateFilterBtn();
   refreshHistory();
 });
 
@@ -315,8 +321,9 @@ saveFileBtn.addEventListener('click', () => saveToFile());
 
 async function saveAndCommit(contentOverride?: string, silent = false) {
   if (!doc) return;
-  cancelPostDeletionCommit();
   const newContent = contentOverride ?? editor.value;
+
+  cancelPostDeletionCommit();
 
   let message: string;
   if (!silent && customMsgChk.checked) {
