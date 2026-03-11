@@ -62,9 +62,47 @@ def staged_files() -> list[str]:
     return [f for f in r.stdout.strip().split('\n') if f]
 
 
+# ── 캐시: git blob hash를 키로 파일 내용·edit distance 재사용 ──────────────────
+# (히스토리 스쿼시 시 A가 유지될 때 d(A,C)를 다음 스텝 d(A,B)로 재사용)
+
+_blob_content_cache: dict[str, str] = {}   # blob_hash → content
+_edit_dist_cache: dict[tuple[str, str], int] = {}  # (blob_a, blob_b) → distance
+
+
+def blob_hash_at(ref: str, path: str) -> str:
+    """커밋에서 파일의 git blob hash 반환. 없으면 빈 문자열."""
+    r = git('ls-tree', ref, path)
+    parts = r.stdout.split()
+    return parts[2] if len(parts) >= 3 else ''
+
+
+def blob_content(blob: str) -> str:
+    """blob hash로 파일 내용 반환 (캐시)."""
+    if blob not in _blob_content_cache:
+        r = git('cat-file', 'blob', blob)
+        _blob_content_cache[blob] = r.stdout if r.returncode == 0 else ''
+    return _blob_content_cache[blob]
+
+
 def file_at_commit(ref: str, path: str) -> str:
+    """커밋의 파일 내용 반환 (blob hash 캐시 경유)."""
+    blob = blob_hash_at(ref, path)
+    if blob:
+        return blob_content(blob)
+    # 파일이 없는 커밋 (새로 생성되거나 삭제된 경우)
     r = git('show', f'{ref}:{path}')
     return r.stdout if r.returncode == 0 else ''
+
+
+def edit_distance_cached(ref_a: str, path_a: str, content_a: str,
+                         ref_b: str, path_b: str, content_b: str) -> int:
+    """edit distance 계산 (blob hash 기반 캐시)."""
+    blob_a = blob_hash_at(ref_a, path_a) or f'raw:{hash(content_a)}'
+    blob_b = blob_hash_at(ref_b, path_b) or f'raw:{hash(content_b)}'
+    key = (min(blob_a, blob_b), max(blob_a, blob_b))
+    if key not in _edit_dist_cache:
+        _edit_dist_cache[key] = edit_distance(content_a, content_b)
+    return _edit_dist_cache[key]
 
 
 def staged_content(path: str) -> str:
@@ -196,7 +234,12 @@ def check_squash(verbose: bool = False) -> tuple[bool, str]:
 # ── Core: 히스토리 스쿼시 판단 ────────────────────────────────────────────────
 
 def can_squash_commits(a_hash: str, b_hash: str, c_hash: str, verbose: bool = False) -> bool:
-    """커밋 B를 DROP해도 되는지 (A와 C 사이에서 B가 중간 단계인지) 검사."""
+    """커밋 B를 fixup해도 되는지 (A와 C 사이에서 B가 중간 단계인지) 검사.
+
+    edit distance는 blob hash 기반으로 캐시됨:
+    - A가 유지될 때 이전 d(A,C)가 다음 스텝의 d(A,B)로 자동 재사용
+    - 동일 파일 내용은 커밋이 달라도 한 번만 계산
+    """
     files = files_between(a_hash, c_hash)
     if not files:
         return True
@@ -211,11 +254,12 @@ def can_squash_commits(a_hash: str, b_hash: str, c_hash: str, verbose: bool = Fa
                 print(f"    binary  {path}")
             return False
 
-        if not is_squashable(a, b, c):
+        d_ab = edit_distance_cached(a_hash, path, a, b_hash, path, b)
+        d_bc = edit_distance_cached(b_hash, path, b, c_hash, path, c)
+        d_ac = edit_distance_cached(a_hash, path, a, c_hash, path, c)
+
+        if d_ab + d_bc != d_ac:
             if verbose:
-                d_ab = edit_distance(a, b)
-                d_bc = edit_distance(b, c)
-                d_ac = edit_distance(a, c)
                 print(f"    unsafe  {path}  {d_ab}+{d_bc}≠{d_ac}")
             return False
 
