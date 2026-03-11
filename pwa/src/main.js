@@ -17,7 +17,7 @@ let doc = null;
 let snapshots = [];
 let visibleSnapshots = [];
 let selectedRow = -1;
-let filterDeleteOnly = false;
+let filterDeleteOnly = true;
 let lastSavedContent = '';
 let modified = false;
 // ---------------------------------------------------------------------------
@@ -81,6 +81,7 @@ function loadCurrentPage() {
     _preChangeContent = content;
     modified = false;
     renderPageBar();
+    updateFilterBtn();
     refreshHistory();
     updateStatus();
 }
@@ -200,10 +201,16 @@ function hidePageCtxMenu() { pageCtxMenu.style.display = 'none'; }
 // ---------------------------------------------------------------------------
 // 편집 감지 — 버퍼 + 트리거 기반 자동 커밋
 // ---------------------------------------------------------------------------
-const POST_DELETION_DELAY = 1500;
+const POST_DELETION_DELAY = 500;
 let _preChangeContent = '';
 let _inDeletionSeq = false;
 let _postDeletionTimer = null;
+let _composing = false; // IME 조합 중 여부
+editor.addEventListener('compositionstart', () => { _composing = true; });
+editor.addEventListener('compositionend', () => {
+    _composing = false;
+    _preChangeContent = editor.value;
+});
 function schedulePostDeletionCommit() {
     if (_postDeletionTimer)
         clearTimeout(_postDeletionTimer);
@@ -220,26 +227,23 @@ function cancelPostDeletionCommit() {
         _postDeletionTimer = null;
     }
 }
-function isCompletionChar(current, prev) {
-    if (current.length <= prev.length)
-        return false;
-    const last = current[current.length - 1];
-    const second = current.length >= 2 ? current[current.length - 2] : '';
-    if (last === '\n' && second !== '\n')
-        return true;
-    if ('.!?。'.includes(last) && last !== second)
-        return true;
-    return false;
-}
 editor.addEventListener('input', () => {
     const current = editor.value;
     const prev = _preChangeContent;
+    if (_composing) {
+        if (current !== lastSavedContent) {
+            modified = true;
+            updateStatus();
+        }
+        return;
+    }
     _preChangeContent = current;
     if (current !== lastSavedContent) {
         modified = true;
         updateStatus();
     }
     if (current.length < prev.length) {
+        // 삭제 감지: 직전 상태를 즉시 커밋 (삭제 전 내용 보존)
         if (!_inDeletionSeq) {
             _inDeletionSeq = true;
             if (prev !== lastSavedContent)
@@ -250,8 +254,6 @@ editor.addEventListener('input', () => {
     else {
         _inDeletionSeq = false;
         cancelPostDeletionCommit();
-        if (isCompletionChar(current, prev))
-            saveAndCommit(undefined, true);
     }
 });
 // ---------------------------------------------------------------------------
@@ -289,9 +291,13 @@ function navigateHistory(dir) {
         : Math.max(0, Math.min(visibleSnapshots.length - 1, selectedRow + dir));
     selectRow(next);
 }
+function updateFilterBtn() {
+    filterDelBtn.classList.toggle('active', filterDeleteOnly);
+    filterDelBtn.textContent = filterDeleteOnly ? '모두' : '삭제만';
+}
 filterDelBtn.addEventListener('click', () => {
     filterDeleteOnly = !filterDeleteOnly;
-    filterDelBtn.classList.toggle('active', filterDeleteOnly);
+    updateFilterBtn();
     refreshHistory();
 });
 prevSnapBtn.addEventListener('click', () => navigateHistory(-1));
@@ -304,8 +310,8 @@ saveFileBtn.addEventListener('click', () => saveToFile());
 async function saveAndCommit(contentOverride, silent = false) {
     if (!doc)
         return;
-    cancelPostDeletionCommit();
     const newContent = contentOverride ?? editor.value;
+    cancelPostDeletionCommit();
     let message;
     if (!silent && customMsgChk.checked) {
         const msg = await promptDialog('커밋 메시지를 입력하세요:', '');
