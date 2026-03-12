@@ -70,8 +70,54 @@ export interface LostHunk {
 }
 
 /**
+ * from → to 사이에서 삭제된 텍스트 hunk를 반환한다. (raw, 필터링 없음)
+ * document.ts의 pruning 시 사용.
+ */
+export function computeDeletedHunks(from: string, to: string): LostHunk[] {
+  const diff  = diffChars(from, to);
+  const lines = from.split('\n');
+  const hunks: LostHunk[] = [];
+  let pos = 0;
+
+  for (const chunk of diff) {
+    if (chunk.removed) {
+      const text = chunk.value;
+      if (text.trim()) {
+        let charCount = 0;
+        let startLine = 0;
+        let endLine   = 0;
+        const endPos  = pos + text.length - 1;
+
+        for (let l = 0; l < lines.length; l++) {
+          const lineEnd = charCount + lines[l].length;
+          if (startLine === 0 && pos <= lineEnd)  startLine = l;
+          if (endPos <= lineEnd) { endLine = l; break; }
+          charCount += lines[l].length + 1;
+        }
+
+        let before = '';
+        for (let l = startLine - 1; l >= 0; l--) {
+          if (lines[l].trim()) { before = lines[l]; break; }
+        }
+        let after = '';
+        for (let l = endLine + 1; l < lines.length; l++) {
+          if (lines[l].trim()) { after = lines[l]; break; }
+        }
+
+        hunks.push({ before, deleted: text, after });
+      }
+      pos += text.length;
+    } else if (!chunk.added) {
+      pos += chunk.value.length;
+    }
+  }
+
+  return hunks;
+}
+
+/**
  * 스냅샷 배열(오래된 순)을 순회하며 손실된 텍스트 hunk 목록을 반환한다.
- * - 현재 내용에 남아있는 텍스트는 제외 (재추가된 것)
+ * - 현재 내용에 남아있는 텍스트는 제외
  * - 동일한 삭제 내용은 한 번만 포함 (dedup)
  */
 export function getLostHunks(
@@ -84,48 +130,11 @@ export function getLostHunks(
   const hunks: LostHunk[] = [];
 
   for (let i = 0; i < snapshots.length - 1; i++) {
-    const prev = snapshots[i].content;
-    const curr = snapshots[i + 1].content;
-    const diff = diffChars(prev, curr);
-
-    let pos = 0;
-    for (const chunk of diff) {
-      if (chunk.removed) {
-        const text = chunk.value;
-        const key  = text.trim();
-
-        if (key && !seen.has(key) && !currentContent.includes(key)) {
-          seen.add(key);
-
-          // 삭제 시작/끝 위치를 기준으로 컨텍스트 줄을 구한다
-          const lines = prev.split('\n');
-          let charCount = 0;
-          let startLine = 0;
-          let endLine   = 0;
-          const endPos  = pos + text.length - 1;
-
-          for (let l = 0; l < lines.length; l++) {
-            const lineEnd = charCount + lines[l].length;
-            if (startLine === 0 && pos <= lineEnd)   startLine = l;
-            if (endPos  <= lineEnd) { endLine = l; break; }
-            charCount += lines[l].length + 1;
-          }
-
-          // 빈 줄을 건너뛰며 위아래 컨텍스트 줄을 찾는다
-          let before = '';
-          for (let l = startLine - 1; l >= 0; l--) {
-            if (lines[l].trim()) { before = lines[l]; break; }
-          }
-          let after = '';
-          for (let l = endLine + 1; l < lines.length; l++) {
-            if (lines[l].trim()) { after = lines[l]; break; }
-          }
-
-          hunks.push({ before, deleted: text, after });
-        }
-        pos += text.length;
-      } else if (!chunk.added) {
-        pos += chunk.value.length;
+    for (const hunk of computeDeletedHunks(snapshots[i].content, snapshots[i + 1].content)) {
+      const key = hunk.deleted.trim();
+      if (key && !seen.has(key) && !currentContent.includes(key)) {
+        seen.add(key);
+        hunks.push(hunk);
       }
     }
   }

@@ -398,7 +398,18 @@ function renderLostView() {
   if (!doc) return;
   lostTextView.innerHTML = '';
 
-  const hunks = getLostHunks(doc.getSnapshots(), doc.getContent());
+  const currentContent = doc.getContent();
+  const accumulated    = doc.getAccumulatedLostHunks();
+  const live           = getLostHunks(doc.getSnapshots(), currentContent);
+
+  // 누적분(오래된 순) + live 합산, dedup + 현재 내용 필터
+  const seen = new Set<string>();
+  const hunks = [...accumulated, ...live].filter(h => {
+    const key = h.deleted.trim();
+    if (!key || seen.has(key) || currentContent.includes(key)) return false;
+    seen.add(key);
+    return true;
+  });
 
   if (hunks.length === 0) {
     const empty = document.createElement('div');

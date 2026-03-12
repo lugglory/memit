@@ -11,6 +11,9 @@
 
 import { checkAmendSafe } from './amendCheck';
 import { idbSave, idbLoad } from './storage';
+import { computeDeletedHunks, LostHunk } from './diffEngine';
+
+const MAX_SNAPSHOTS = 3;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -31,6 +34,7 @@ export interface MemitPage {
   title: string;
   nextId: number;
   snapshots: MemitSnapshot[];
+  lostHunks: LostHunk[];   // pruning으로 버려진 스냅샷에서 누적된 손실 텍스트
 }
 
 interface SerializedSnapshot {
@@ -48,6 +52,7 @@ interface SerializedPage {
   title: string;
   next_id: number;
   snapshots: SerializedSnapshot[];
+  lost_hunks?: Array<{ before: string; deleted: string; after: string }>;
 }
 
 export interface SerializedDoc {
@@ -113,9 +118,28 @@ export class MemitDocument {
       title: title ?? `Page ${this.pages.length + 1}`,
       nextId: 1,
       snapshots: [],
+      lostHunks: [],
     };
     this.pages.push(page);
     return page;
+  }
+
+  /** 스냅샷이 MAX_SNAPSHOTS 초과하면 가장 오래된 것을 lostHunks에 기여하고 제거 */
+  private static _prunePage(page: MemitPage): void {
+    while (page.snapshots.length > MAX_SNAPSHOTS) {
+      const [oldest, next] = page.snapshots;
+      for (const hunk of computeDeletedHunks(oldest.content, next.content)) {
+        if (!page.lostHunks.some(h => h.deleted === hunk.deleted)) {
+          page.lostHunks.push(hunk);
+        }
+      }
+      page.snapshots.shift();
+    }
+  }
+
+  /** 현재 페이지의 누적 손실 hunk 반환 (raw, 현재 내용 필터 미적용) */
+  getAccumulatedLostHunks(): LostHunk[] {
+    return this.getCurrentPage().lostHunks;
   }
 
   /** 페이지를 삭제한다. 마지막 페이지는 삭제 불가. */
@@ -159,6 +183,7 @@ export class MemitDocument {
         id: p.id,
         title: p.title,
         next_id: p.nextId,
+        lost_hunks: p.lostHunks,
         snapshots: p.snapshots.map(s => ({
           id:          s.id,
           message:     s.message,
@@ -195,23 +220,24 @@ export class MemitDocument {
     }
 
     const v2 = raw as SerializedDoc;
-    return {
-      nextPageId: v2.next_page_id ?? 1,
-      pages: (v2.pages ?? []).map(p => ({
-        id:        p.id,
-        title:     p.title,
-        nextId:    p.next_id ?? 1,
-        snapshots: (p.snapshots ?? []).map(s => ({
-          id:         s.id,
-          message:    s.message,
-          timestamp:  s.timestamp,
-          content:    s.content,
-          parent:     s.parent ?? null,
-          amended:    s.amended ?? false,
-          amendCount: s.amend_count ?? 0,
-        })),
+    const pages: MemitPage[] = (v2.pages ?? []).map(p => ({
+      id:        p.id,
+      title:     p.title,
+      nextId:    p.next_id ?? 1,
+      lostHunks: (p.lost_hunks ?? []).map(h => ({ before: h.before, deleted: h.deleted, after: h.after })),
+      snapshots: (p.snapshots ?? []).map(s => ({
+        id:         s.id,
+        message:    s.message,
+        timestamp:  s.timestamp,
+        content:    s.content,
+        parent:     s.parent ?? null,
+        amended:    s.amended ?? false,
+        amendCount: s.amend_count ?? 0,
       })),
-    };
+    }));
+    // 기존 파일(스냅샷이 3개 초과)을 마이그레이션
+    for (const page of pages) MemitDocument._prunePage(page);
+    return { nextPageId: v2.next_page_id ?? 1, pages };
   }
 
   // ------------------------------------------------------------------
@@ -310,6 +336,7 @@ export class MemitDocument {
 
     if (!last) {
       snaps.push(makeSnap(content, message, null));
+      MemitDocument._prunePage(page);
       await this.saveToDb();
       return [true, `Created snapshot ${snaps.at(-1)!.id}`];
     }
@@ -320,6 +347,7 @@ export class MemitDocument {
 
     if (!secondLast) {
       snaps.push(makeSnap(content, message, last.id));
+      MemitDocument._prunePage(page);
       await this.saveToDb();
       return [true, `Created snapshot ${snaps.at(-1)!.id}`];
     }
@@ -336,10 +364,12 @@ export class MemitDocument {
       last.timestamp  = new Date().toISOString();
       last.amended    = true;
       last.amendCount++;
+      // amend는 새 스냅샷을 추가하지 않으므로 pruning 불필요
       await this.saveToDb();
       return [true, `Amended snapshot ${last.id} (${reason})`];
     } else {
       snaps.push(makeSnap(content, message, last.id));
+      MemitDocument._prunePage(page);  // amend 판단 후, push 이후에만 실행
       await this.saveToDb();
       return [true, `Created snapshot ${snaps.at(-1)!.id} (amend unsafe: ${reason})`];
     }
