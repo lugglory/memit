@@ -226,14 +226,6 @@ const POST_DELETION_DELAY = 500;
 let _preChangeContent = '';
 let _inDeletionSeq    = false;
 let _postDeletionTimer: ReturnType<typeof setTimeout> | null = null;
-let _composing        = false;  // IME 조합 중 여부
-
-editor.addEventListener('compositionstart', () => { _composing = true; });
-editor.addEventListener('compositionend',   () => {
-  _composing = false;
-  _preChangeContent = editor.value;
-});
-
 function schedulePostDeletionCommit() {
   if (_postDeletionTimer) clearTimeout(_postDeletionTimer);
   _postDeletionTimer = setTimeout(async () => {
@@ -247,11 +239,14 @@ function cancelPostDeletionCommit() {
   if (_postDeletionTimer) { clearTimeout(_postDeletionTimer); _postDeletionTimer = null; }
 }
 
-editor.addEventListener('input', () => {
-  const current = editor.value;
-  const prev    = _preChangeContent;
+editor.addEventListener('input', (e: Event) => {
+  const current   = editor.value;
+  const prev      = _preChangeContent;
+  const inputType = (e as InputEvent).inputType ?? '';
+  const composing = (e as InputEvent).isComposing ?? false;
 
-  if (_composing) {
+  // 조합 중(IME / iOS 자동교정)이면 modified만 갱신하고 종료
+  if (composing) {
     if (current !== lastSavedContent) { modified = true; updateStatus(); }
     return;
   }
@@ -260,7 +255,10 @@ editor.addEventListener('input', () => {
 
   if (current !== lastSavedContent) { modified = true; updateStatus(); }
 
-  if (current.length < prev.length) {
+  // inputType 우선 판단, 없으면 길이 비교로 폴백
+  const isDelete = inputType.startsWith('delete') || current.length < prev.length;
+
+  if (isDelete) {
     // 삭제 감지: 직전 상태를 즉시 커밋 (삭제 전 내용 보존)
     if (!_inDeletionSeq) {
       _inDeletionSeq = true;
@@ -268,8 +266,11 @@ editor.addEventListener('input', () => {
     }
     schedulePostDeletionCommit();
   } else {
-    _inDeletionSeq = false;
-    cancelPostDeletionCommit();
+    // 삽입/변경: iOS 자동교정이 삭제 중간에 삽입할 수 있으므로
+    // 삭제 시퀀스 중이 아닐 때만 타이머를 취소한다.
+    if (!_inDeletionSeq) {
+      cancelPostDeletionCommit();
+    }
   }
 });
 
