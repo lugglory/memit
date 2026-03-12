@@ -200,23 +200,23 @@ export class MemitDocument {
   private static _parsePages(raw: SerializedDoc | SerializedDocV1): { pages: MemitPage[]; nextPageId: number } {
     if (raw.format_version === 1) {
       const v1 = raw as SerializedDocV1;
-      return {
-        nextPageId: 2,
-        pages: [{
-          id:        1,
-          title:     'Page 1',
-          nextId:    v1.next_id ?? 1,
-          snapshots: (v1.snapshots ?? []).map(s => ({
-            id:         s.id,
-            message:    s.message,
-            timestamp:  s.timestamp,
-            content:    s.content,
-            parent:     s.parent ?? null,
-            amended:    s.amended ?? false,
-            amendCount: s.amend_count ?? 0,
-          })),
-        }],
+      const page: MemitPage = {
+        id:        1,
+        title:     'Page 1',
+        nextId:    v1.next_id ?? 1,
+        lostHunks: [],
+        snapshots: (v1.snapshots ?? []).map(s => ({
+          id:         s.id,
+          message:    s.message,
+          timestamp:  s.timestamp,
+          content:    s.content,
+          parent:     s.parent ?? null,
+          amended:    s.amended ?? false,
+          amendCount: s.amend_count ?? 0,
+        })),
       };
+      MemitDocument._prunePage(page);
+      return { nextPageId: 2, pages: [page] };
     }
 
     const v2 = raw as SerializedDoc;

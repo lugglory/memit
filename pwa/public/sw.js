@@ -1,4 +1,4 @@
-const CACHE = 'memit-v3';
+const CACHE = 'memit-v4';
 
 self.addEventListener('install', () => self.skipWaiting());
 

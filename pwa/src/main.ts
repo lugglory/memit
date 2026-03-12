@@ -299,14 +299,15 @@ async function saveAndCommit(contentOverride?: string, silent = false) {
       lastSavedContent = newContent;
       modified = (editor.value !== newContent);
       const prefix = resultMsg.includes('Amended') ? '✓ Amended' : '✓ Saved';
-      renderLostView();
       if (!silent) flashStatus(`${prefix}: ${resultMsg}`);
     } else {
       if (!silent) flashStatus(`ℹ ${resultMsg}`);
     }
   } catch (e) {
     alert(`저장 실패: ${e}`);
+    return;
   }
+  renderLostView();
 }
 
 // ---------------------------------------------------------------------------
