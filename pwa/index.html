@@ -57,37 +57,13 @@
       <!-- 드래그 핸들 -->
       <div id="drag-handle"></div>
 
-      <!-- 히스토리 패널 -->
+      <!-- 손실 텍스트 패널 -->
       <div id="history-panel">
-        <div class="panel-header">
-          <div class="panel-title" id="history-panel-title">HISTORY</div>
-          <div class="panel-nav">
-            <button id="lost-view-btn" title="손실 텍스트 보기">손실</button>
-            <button id="filter-del-btn" title="삭제 이력만 보기">모두</button>
-            <button id="prev-snap-btn" title="이전 항목 (Alt+↑)">▲</button>
-            <button id="next-snap-btn" title="다음 항목 (Alt+↓)">▼</button>
-          </div>
-        </div>
-
-        <!-- 히스토리 뷰 -->
-        <div id="history-view">
-          <ul id="history-list"></ul>
-          <div class="sep"></div>
-          <div class="panel-title">DIFF PREVIEW</div>
-          <div id="diff-view"></div>
-          <button id="restore-btn" disabled>↻ Restore Selected Version</button>
-        </div>
-
-        <!-- 손실 텍스트 뷰 -->
-        <div id="lost-text-view" style="display:none;"></div>
+        <div class="panel-title">LOST TEXT</div>
+        <div id="lost-text-view"></div>
       </div>
 
     </div>
-  </div>
-
-  <!-- 스냅샷 컨텍스트 메뉴 -->
-  <div id="ctx-menu" style="display:none;">
-    <div id="ctx-edit">커밋 메시지 수정</div>
   </div>
 
   <!-- 페이지 탭 컨텍스트 메뉴 -->

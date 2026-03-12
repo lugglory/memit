@@ -229,63 +229,8 @@ label {
 }
 label input[type="checkbox"] { accent-color: var(--accent); width: 14px; height: 14px; }
 
-/* ─── History list ─── */
-#history-list {
-  flex: 4;
-  min-height: 0;
-  background: var(--widget);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  overflow-y: auto;
-  list-style: none;
-}
 
-#history-list li {
-  padding: 5px 10px;
-  font-size: 12px;
-  cursor: pointer;
-  user-select: none;
-  border-bottom: 1px solid #333;
-}
-#history-list li:last-child { border-bottom: none; }
-#history-list li:hover   { background: #383838; }
-#history-list li.selected { background: var(--accent) !important; color: #fff; }
-
-/* ─── Separator ─── */
-.sep {
-  height: 1px;
-  background: var(--border);
-  flex-shrink: 0;
-}
-
-/* ─── Diff viewer ─── */
-#diff-view {
-  flex: 6;
-  min-height: 0;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  overflow-y: auto;
-  padding: 8px 10px;
-  font-family: var(--mono);
-  font-size: 13px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-.diff-ins  { color: #69db7c; background: #1a3d1a; }
-.diff-del  { color: #ff6b6b; background: #3d1a1a; }
-
-/* ─── History / Lost-text view wrappers ─── */
-#history-view {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  gap: 6px;
-}
-
+/* ─── Lost-text view ─── */
 #lost-text-view {
   flex: 1;
   min-height: 0;

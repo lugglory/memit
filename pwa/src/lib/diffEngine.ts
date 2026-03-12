@@ -111,11 +111,17 @@ export function getLostHunks(
             charCount += lines[l].length + 1;
           }
 
-          hunks.push({
-            before:  startLine > 0               ? lines[startLine - 1] : '',
-            deleted: text,
-            after:   endLine < lines.length - 1  ? lines[endLine   + 1] : '',
-          });
+          // 빈 줄을 건너뛰며 위아래 컨텍스트 줄을 찾는다
+          let before = '';
+          for (let l = startLine - 1; l >= 0; l--) {
+            if (lines[l].trim()) { before = lines[l]; break; }
+          }
+          let after = '';
+          for (let l = endLine + 1; l < lines.length; l++) {
+            if (lines[l].trim()) { after = lines[l]; break; }
+          }
+
+          hunks.push({ before, deleted: text, after });
         }
         pos += text.length;
       } else if (!chunk.added) {

@@ -8,7 +8,7 @@
  */
 
 import './style.css';
-import { MemitDocument, MemitSnapshot } from './lib/document';
+import { MemitDocument } from './lib/document';
 import { checkAmendSafe } from './lib/amendCheck';
 import { getCharacterDiff, getLostHunks } from './lib/diffEngine';
 
@@ -17,10 +17,6 @@ import { getCharacterDiff, getLostHunks } from './lib/diffEngine';
 // ---------------------------------------------------------------------------
 
 let doc: MemitDocument | null = null;
-let snapshots: MemitSnapshot[] = [];
-let visibleSnapshots: { snap: MemitSnapshot; origIndex: number }[] = [];
-let selectedRow = -1;
-let filterDeleteOnly = true;
 let lastSavedContent = '';
 let modified = false;
 
@@ -34,26 +30,15 @@ function el<T extends HTMLElement>(id: string): T {
   return e;
 }
 
-const statusBar    = el('status-bar');
-const pageBar      = el('page-bar');
-const editor       = el<HTMLTextAreaElement>('editor');
-const saveBtn      = el<HTMLButtonElement>('save-btn');
-const saveFileBtn  = el<HTMLButtonElement>('save-file-btn');
+const statusBar   = el('status-bar');
+const pageBar     = el('page-bar');
+const editor      = el<HTMLTextAreaElement>('editor');
+const saveBtn     = el<HTMLButtonElement>('save-btn');
+const saveFileBtn = el<HTMLButtonElement>('save-file-btn');
 const customMsgChk = el<HTMLInputElement>('custom-msg');
-const exportBtn    = el<HTMLButtonElement>('export-btn');
-const copyBtn      = el<HTMLButtonElement>('copy-btn');
-const historyList  = el<HTMLUListElement>('history-list');
-const diffView     = el<HTMLDivElement>('diff-view');
-const restoreBtn    = el<HTMLButtonElement>('restore-btn');
-const filterDelBtn  = el<HTMLButtonElement>('filter-del-btn');
-const prevSnapBtn   = el<HTMLButtonElement>('prev-snap-btn');
-const nextSnapBtn   = el<HTMLButtonElement>('next-snap-btn');
-const lostViewBtn   = el<HTMLButtonElement>('lost-view-btn');
-const historyView   = el<HTMLDivElement>('history-view');
-const lostTextView  = el<HTMLDivElement>('lost-text-view');
-const panelTitle    = el<HTMLDivElement>('history-panel-title');
-const ctxMenu      = el<HTMLDivElement>('ctx-menu');
-const ctxEdit      = el<HTMLDivElement>('ctx-edit');
+const exportBtn   = el<HTMLButtonElement>('export-btn');
+const copyBtn     = el<HTMLButtonElement>('copy-btn');
+const lostTextView = el<HTMLDivElement>('lost-text-view');
 
 // ---------------------------------------------------------------------------
 // 파일 열기 / 만들기
@@ -64,7 +49,7 @@ async function openFile() {
     types: [{ description: 'Memit 파일', accept: { 'application/json': ['.memit'] } }],
   });
   doc = await MemitDocument.loadFromFile(handle);
-  await doc.saveToDb();   // IDB 갱신
+  await doc.saveToDb();
   initApp();
 }
 
@@ -83,7 +68,6 @@ function initApp() {
   document.getElementById('landing')!.style.display = 'none';
   document.getElementById('app')!.style.display = 'flex';
   document.title = `${doc.fileName} - Memit Memo`;
-
   loadCurrentPage();
 }
 
@@ -96,8 +80,7 @@ function loadCurrentPage() {
   modified = false;
 
   renderPageBar();
-  updateFilterBtn();
-  refreshHistory();
+  renderLostView();
   updateStatus();
 }
 
@@ -135,7 +118,6 @@ function renderPageBar() {
 
 function switchPage(idx: number) {
   if (!doc) return;
-  // 현재 에디터 상태를 커밋하지 않고 전환 (modified 상태는 버림)
   doc.switchToPage(idx);
   loadCurrentPage();
 }
@@ -195,9 +177,9 @@ async function deletePage(idx: number) {
 // ---------------------------------------------------------------------------
 
 let pageCtxIdx = -1;
-const pageCtxMenu    = el<HTMLDivElement>('page-ctx-menu');
-const pageCtxRename  = el<HTMLDivElement>('page-ctx-rename');
-const pageCtxDelete  = el<HTMLDivElement>('page-ctx-delete');
+const pageCtxMenu   = el<HTMLDivElement>('page-ctx-menu');
+const pageCtxRename = el<HTMLDivElement>('page-ctx-rename');
+const pageCtxDelete = el<HTMLDivElement>('page-ctx-delete');
 
 function showPageCtxMenu(e: MouseEvent, idx: number) {
   e.preventDefault();
@@ -230,6 +212,7 @@ const POST_DELETION_DELAY = 500;
 let _preChangeContent = '';
 let _inDeletionSeq    = false;
 let _postDeletionTimer: ReturnType<typeof setTimeout> | null = null;
+
 function schedulePostDeletionCommit() {
   if (_postDeletionTimer) clearTimeout(_postDeletionTimer);
   _postDeletionTimer = setTimeout(async () => {
@@ -249,7 +232,6 @@ editor.addEventListener('input', (e: Event) => {
   const inputType = (e as InputEvent).inputType ?? '';
   const composing = (e as InputEvent).isComposing ?? false;
 
-  // 조합 중(IME / iOS 자동교정)이면 modified만 갱신하고 종료
   if (composing) {
     if (current !== lastSavedContent) { modified = true; updateStatus(); }
     return;
@@ -259,19 +241,15 @@ editor.addEventListener('input', (e: Event) => {
 
   if (current !== lastSavedContent) { modified = true; updateStatus(); }
 
-  // inputType 우선 판단, 없으면 길이 비교로 폴백
   const isDelete = inputType.startsWith('delete') || current.length < prev.length;
 
   if (isDelete) {
-    // 삭제 감지: 직전 상태를 즉시 커밋 (삭제 전 내용 보존)
     if (!_inDeletionSeq) {
       _inDeletionSeq = true;
       if (prev !== lastSavedContent) saveAndCommit(prev, true);
     }
     schedulePostDeletionCommit();
   } else {
-    // 삽입/변경: iOS 자동교정이 삭제 중간에 삽입할 수 있으므로
-    // 삭제 시퀀스 중이 아닐 때만 타이머를 취소한다.
     if (!_inDeletionSeq) {
       cancelPostDeletionCommit();
     }
@@ -285,104 +263,15 @@ editor.addEventListener('input', (e: Event) => {
 document.addEventListener('keydown', e => {
   if (e.ctrlKey || e.metaKey) {
     const key = e.key.toLowerCase();
-    if (key === 's' && e.shiftKey)  { e.preventDefault(); saveToFile(); }
-    else if (key === 's')           { e.preventDefault(); saveAndCommit(); }
-    return;
-  }
-  if (e.altKey) {
-    if (e.key === 'ArrowUp')   { e.preventDefault(); navigateHistory(-1); }
-    if (e.key === 'ArrowDown') { e.preventDefault(); navigateHistory(1); }
+    if (key === 's' && e.shiftKey) { e.preventDefault(); saveToFile(); }
+    else if (key === 's')          { e.preventDefault(); saveAndCommit(); }
   }
 });
 
-function navigateHistory(dir: 1 | -1) {
-  if (visibleSnapshots.length === 0) return;
-  const next = selectedRow < 0
-    ? (dir === 1 ? 0 : visibleSnapshots.length - 1)
-    : Math.max(0, Math.min(visibleSnapshots.length - 1, selectedRow + dir));
-  selectRow(next);
-}
+document.addEventListener('click',   () => hidePageCtxMenu());
+document.addEventListener('keydown', e => { if (e.key === 'Escape') hidePageCtxMenu(); });
 
-function updateFilterBtn() {
-  filterDelBtn.classList.toggle('active', filterDeleteOnly);
-  filterDelBtn.textContent = filterDeleteOnly ? '모두' : '삭제만';
-}
-
-filterDelBtn.addEventListener('click', () => {
-  filterDeleteOnly = !filterDeleteOnly;
-  updateFilterBtn();
-  refreshHistory();
-});
-
-// ---------------------------------------------------------------------------
-// 손실 텍스트 뷰
-// ---------------------------------------------------------------------------
-
-let _lostViewActive = false;
-
-lostViewBtn.addEventListener('click', () => {
-  _lostViewActive = !_lostViewActive;
-  lostViewBtn.classList.toggle('active', _lostViewActive);
-
-  if (_lostViewActive) {
-    historyView.style.display  = 'none';
-    lostTextView.style.display = 'flex';
-    panelTitle.textContent     = 'LOST TEXT';
-    renderLostView();
-  } else {
-    historyView.style.display  = 'flex';
-    lostTextView.style.display = 'none';
-    panelTitle.textContent     = 'HISTORY';
-  }
-});
-
-function renderLostView() {
-  if (!doc) return;
-  lostTextView.innerHTML = '';
-
-  const allSnaps = doc.getSnapshots();       // 오래된 순
-  const current  = doc.getContent();
-  const hunks    = getLostHunks(allSnaps, current);
-
-  if (hunks.length === 0) {
-    const empty = document.createElement('div');
-    empty.className   = 'lost-empty';
-    empty.textContent = '손실된 텍스트 없음';
-    lostTextView.appendChild(empty);
-    return;
-  }
-
-  for (const { before, deleted, after } of hunks) {
-    const hunk = document.createElement('div');
-    hunk.className = 'lost-hunk';
-
-    if (before) {
-      const bLine = document.createElement('div');
-      bLine.className   = 'lost-ctx';
-      bLine.textContent = before;
-      hunk.appendChild(bLine);
-    }
-
-    const dLine = document.createElement('div');
-    dLine.className   = 'lost-del';
-    dLine.textContent = deleted;
-    hunk.appendChild(dLine);
-
-    if (after) {
-      const aLine = document.createElement('div');
-      aLine.className   = 'lost-ctx';
-      aLine.textContent = after;
-      hunk.appendChild(aLine);
-    }
-
-    lostTextView.appendChild(hunk);
-  }
-}
-
-prevSnapBtn.addEventListener('click', () => navigateHistory(-1));
-nextSnapBtn.addEventListener('click', () => navigateHistory(1));
-
-saveBtn.addEventListener('click', () => saveAndCommit());
+saveBtn.addEventListener('click',     () => saveAndCommit());
 saveFileBtn.addEventListener('click', () => saveToFile());
 
 // ---------------------------------------------------------------------------
@@ -410,7 +299,7 @@ async function saveAndCommit(contentOverride?: string, silent = false) {
       lastSavedContent = newContent;
       modified = (editor.value !== newContent);
       const prefix = resultMsg.includes('Amended') ? '✓ Amended' : '✓ Saved';
-      refreshHistory();
+      renderLostView();
       if (!silent) flashStatus(`${prefix}: ${resultMsg}`);
     } else {
       if (!silent) flashStatus(`ℹ ${resultMsg}`);
@@ -502,160 +391,49 @@ exportBtn.addEventListener('click', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// 히스토리 패널
+// 손실 텍스트 뷰
 // ---------------------------------------------------------------------------
 
-function refreshHistory() {
+function renderLostView() {
   if (!doc) return;
-  historyList.innerHTML = '';
-  snapshots = [...doc.getSnapshots()].reverse();
-  selectedRow = -1;
-  restoreBtn.disabled = true;
-  diffView.innerHTML = '';
+  lostTextView.innerHTML = '';
 
-  visibleSnapshots = snapshots
-    .map((snap, origIndex) => ({ snap, origIndex }))
-    .filter(({ snap, origIndex }) =>
-      !filterDeleteOnly || ['delete', 'mixed'].includes(getChangeType(snap, origIndex))
-    );
+  const hunks = getLostHunks(doc.getSnapshots(), doc.getContent());
 
-  if (visibleSnapshots.length === 0) {
-    const li = document.createElement('li');
-    li.textContent = snapshots.length === 0 ? 'No snapshots yet' : '삭제 이력 없음';
-    li.style.color = '#666';
-    historyList.appendChild(li);
+  if (hunks.length === 0) {
+    const empty = document.createElement('div');
+    empty.className   = 'lost-empty';
+    empty.textContent = '손실된 텍스트 없음';
+    lostTextView.appendChild(empty);
     return;
   }
 
-  visibleSnapshots.forEach(({ snap, origIndex }, i) => {
-    const li = document.createElement('li');
-    li.dataset.row = String(i);
-    li.textContent = formatSnapEntry(snap);
+  for (const { before, deleted, after } of hunks) {
+    const hunk = document.createElement('div');
+    hunk.className = 'lost-hunk';
 
-    const changeType = getChangeType(snap, origIndex);
-    if (changeType === 'insert') li.style.background = '#1a3d1a';
-    else if (changeType === 'delete') li.style.background = '#3d1a1a';
-    else if (changeType === 'mixed')  li.style.background = '#1a2d3d';
-
-    li.addEventListener('click', () => selectRow(i));
-    li.addEventListener('contextmenu', e => showCtxMenu(e, i));
-    historyList.appendChild(li);
-  });
-}
-
-function formatSnapEntry(snap: MemitSnapshot): string {
-  try {
-    const dt = new Date(snap.timestamp);
-    const ts = dt.toLocaleString('sv-SE').replace('T', ' ');
-    return `#${snap.id}: ${snap.message} - ${ts}`;
-  } catch {
-    return `#${snap.id}: ${snap.message} - ${snap.timestamp}`;
-  }
-}
-
-function getChangeType(snap: MemitSnapshot, index: number): 'insert' | 'delete' | 'mixed' {
-  if (index >= snapshots.length - 1) return 'insert';
-  const prev = snapshots[index + 1];
-  if (!prev.content && snap.content) return 'insert';
-  if (prev.content && !snap.content) return 'delete';
-  try {
-    const diff = getCharacterDiff(prev.content, snap.content);
-    const hasIns = diff.some(([op]) => op === 'insert');
-    const hasDel = diff.some(([op]) => op === 'delete');
-    if (hasIns && hasDel) return 'mixed';
-    return hasIns ? 'insert' : (hasDel ? 'delete' : 'mixed');
-  } catch {
-    return 'mixed';
-  }
-}
-
-function selectRow(row: number) {
-  if (row < 0 || row >= visibleSnapshots.length) return;
-  historyList.querySelectorAll('li.selected').forEach(el => el.classList.remove('selected'));
-  selectedRow = row;
-  const li = historyList.querySelector<HTMLLIElement>(`li[data-row="${row}"]`);
-  li?.classList.add('selected');
-  li?.scrollIntoView({ block: 'nearest' });
-  restoreBtn.disabled = false;
-
-  const { snap, origIndex } = visibleSnapshots[row];
-  const oldContent = origIndex + 1 < snapshots.length ? snapshots[origIndex + 1].content : '';
-  showDiff(oldContent, snap.content);
-}
-
-// ---------------------------------------------------------------------------
-// Diff 표시
-// ---------------------------------------------------------------------------
-
-function showDiff(oldContent: string, newContent: string) {
-  diffView.innerHTML = '';
-  if (oldContent === newContent) {
-    diffView.textContent = '[No differences - content is identical]';
-    return;
-  }
-  try {
-    for (const [op, text] of getCharacterDiff(oldContent, newContent)) {
-      const span = document.createElement('span');
-      span.textContent = text;
-      if (op === 'insert') span.className = 'diff-ins';
-      else if (op === 'delete') span.className = 'diff-del';
-      diffView.appendChild(span);
+    if (before) {
+      const bLine = document.createElement('div');
+      bLine.className   = 'lost-ctx';
+      bLine.textContent = before;
+      hunk.appendChild(bLine);
     }
-  } catch (e) {
-    diffView.textContent = `Error generating diff: ${e}`;
+
+    const dLine = document.createElement('div');
+    dLine.className   = 'lost-del';
+    dLine.textContent = deleted;
+    hunk.appendChild(dLine);
+
+    if (after) {
+      const aLine = document.createElement('div');
+      aLine.className   = 'lost-ctx';
+      aLine.textContent = after;
+      hunk.appendChild(aLine);
+    }
+
+    lostTextView.appendChild(hunk);
   }
 }
-
-// ---------------------------------------------------------------------------
-// 버전 복원
-// ---------------------------------------------------------------------------
-
-restoreBtn.addEventListener('click', async () => {
-  if (selectedRow < 0 || selectedRow >= visibleSnapshots.length) return;
-  const { snap } = visibleSnapshots[selectedRow];
-  const ok = confirm(
-    `Snapshot #${snap.id}을 복원할까요?\n\n` +
-    `메시지: ${snap.message}\n시간: ${snap.timestamp}\n\n` +
-    '현재 저장되지 않은 내용은 사라집니다.'
-  );
-  if (!ok) return;
-  editor.value = snap.content;
-  lastSavedContent = '';
-  modified = true;
-  updateStatus();
-  alert(`Snapshot #${snap.id}이 에디터에 복원되었습니다.\n저장하려면 Save 버튼을 누르세요.`);
-});
-
-// ---------------------------------------------------------------------------
-// 컨텍스트 메뉴 (히스토리)
-// ---------------------------------------------------------------------------
-
-let ctxRow = -1;
-
-function showCtxMenu(e: MouseEvent, row: number) {
-  e.preventDefault();
-  ctxRow = row;
-  ctxMenu.style.display = 'block';
-  ctxMenu.style.left = `${e.clientX}px`;
-  ctxMenu.style.top  = `${e.clientY}px`;
-}
-
-ctxEdit.addEventListener('click', async () => {
-  hideCtxMenu();
-  if (ctxRow < 0 || ctxRow >= visibleSnapshots.length || !doc) return;
-  const { snap } = visibleSnapshots[ctxRow];
-  const newMsg = await promptDialog(`Snapshot #${snap.id}의 메시지를 수정:`, snap.message);
-  if (newMsg === null || !newMsg.trim() || newMsg.trim() === snap.message) return;
-  await doc.updateMessage(snap.id, newMsg.trim());
-  setStatus(`Snapshot #${snap.id} 메시지 수정됨`);
-  refreshHistory();
-});
-
-document.addEventListener('click',   () => { hideCtxMenu(); hidePageCtxMenu(); });
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') { hideCtxMenu(); hidePageCtxMenu(); }
-});
-function hideCtxMenu() { ctxMenu.style.display = 'none'; }
 
 // ---------------------------------------------------------------------------
 // 커스텀 다이얼로그
@@ -715,11 +493,9 @@ function promptDialog(label: string, initial: string): Promise<string | null> {
 
 function updateStatus() {
   if (!doc) return;
-  const snaps    = doc.getSnapshots();
-  const page     = doc.getCurrentPage();
-  let status: string;
-
-  status = `[${page.title}] `;
+  const snaps = doc.getSnapshots();
+  const page  = doc.getCurrentPage();
+  let status  = `[${page.title}] `;
 
   if (snaps.length > 0) {
     const last = snaps.at(-1)!;
@@ -731,7 +507,6 @@ function updateStatus() {
 
   status += doc.dirtyToFile ? ' | 💾 파일 미저장' : ' | 📁 파일 저장됨';
   setStatus(`Status: ${status}`);
-
   saveFileBtn.style.borderColor = doc.dirtyToFile ? '#f0a500' : '';
 }
 
@@ -794,7 +569,6 @@ if ('serviceWorker' in navigator) {
     initApp();
     return;
   }
-  // 복원 실패 시 랜딩 표시
   document.getElementById('landing')!.style.display = 'flex';
 })();
 
