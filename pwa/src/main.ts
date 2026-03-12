@@ -10,7 +10,7 @@
 import './style.css';
 import { MemitDocument, MemitSnapshot } from './lib/document';
 import { checkAmendSafe } from './lib/amendCheck';
-import { getCharacterDiff } from './lib/diffEngine';
+import { getCharacterDiff, getLostHunks } from './lib/diffEngine';
 
 // ---------------------------------------------------------------------------
 // 상태
@@ -44,10 +44,14 @@ const exportBtn    = el<HTMLButtonElement>('export-btn');
 const copyBtn      = el<HTMLButtonElement>('copy-btn');
 const historyList  = el<HTMLUListElement>('history-list');
 const diffView     = el<HTMLDivElement>('diff-view');
-const restoreBtn   = el<HTMLButtonElement>('restore-btn');
-const filterDelBtn = el<HTMLButtonElement>('filter-del-btn');
-const prevSnapBtn  = el<HTMLButtonElement>('prev-snap-btn');
-const nextSnapBtn  = el<HTMLButtonElement>('next-snap-btn');
+const restoreBtn    = el<HTMLButtonElement>('restore-btn');
+const filterDelBtn  = el<HTMLButtonElement>('filter-del-btn');
+const prevSnapBtn   = el<HTMLButtonElement>('prev-snap-btn');
+const nextSnapBtn   = el<HTMLButtonElement>('next-snap-btn');
+const lostViewBtn   = el<HTMLButtonElement>('lost-view-btn');
+const historyView   = el<HTMLDivElement>('history-view');
+const lostTextView  = el<HTMLDivElement>('lost-text-view');
+const panelTitle    = el<HTMLDivElement>('history-panel-title');
 const ctxMenu      = el<HTMLDivElement>('ctx-menu');
 const ctxEdit      = el<HTMLDivElement>('ctx-edit');
 
@@ -309,6 +313,71 @@ filterDelBtn.addEventListener('click', () => {
   updateFilterBtn();
   refreshHistory();
 });
+
+// ---------------------------------------------------------------------------
+// 손실 텍스트 뷰
+// ---------------------------------------------------------------------------
+
+let _lostViewActive = false;
+
+lostViewBtn.addEventListener('click', () => {
+  _lostViewActive = !_lostViewActive;
+  lostViewBtn.classList.toggle('active', _lostViewActive);
+
+  if (_lostViewActive) {
+    historyView.style.display  = 'none';
+    lostTextView.style.display = 'flex';
+    panelTitle.textContent     = 'LOST TEXT';
+    renderLostView();
+  } else {
+    historyView.style.display  = 'flex';
+    lostTextView.style.display = 'none';
+    panelTitle.textContent     = 'HISTORY';
+  }
+});
+
+function renderLostView() {
+  if (!doc) return;
+  lostTextView.innerHTML = '';
+
+  const allSnaps = doc.getSnapshots();       // 오래된 순
+  const current  = doc.getContent();
+  const hunks    = getLostHunks(allSnaps, current);
+
+  if (hunks.length === 0) {
+    const empty = document.createElement('div');
+    empty.className   = 'lost-empty';
+    empty.textContent = '손실된 텍스트 없음';
+    lostTextView.appendChild(empty);
+    return;
+  }
+
+  for (const { before, deleted, after } of hunks) {
+    const hunk = document.createElement('div');
+    hunk.className = 'lost-hunk';
+
+    if (before) {
+      const bLine = document.createElement('div');
+      bLine.className   = 'lost-ctx';
+      bLine.textContent = before;
+      hunk.appendChild(bLine);
+    }
+
+    const dLine = document.createElement('div');
+    dLine.className   = 'lost-del';
+    dLine.textContent = deleted;
+    hunk.appendChild(dLine);
+
+    if (after) {
+      const aLine = document.createElement('div');
+      aLine.className   = 'lost-ctx';
+      aLine.textContent = after;
+      hunk.appendChild(aLine);
+    }
+
+    lostTextView.appendChild(hunk);
+  }
+}
 
 prevSnapBtn.addEventListener('click', () => navigateHistory(-1));
 nextSnapBtn.addEventListener('click', () => navigateHistory(1));

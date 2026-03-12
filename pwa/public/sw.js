@@ -1,4 +1,4 @@
-const CACHE = 'memit-v2';
+const CACHE = 'memit-v3';
 
 self.addEventListener('install', () => self.skipWaiting());
 
@@ -26,7 +26,8 @@ self.addEventListener('fetch', e => {
       if (cached) return cached;
       return fetch(e.request).then(res => {
         if (res.ok) {
-          caches.open(CACHE).then(c => c.put(e.request, res.clone()));
+          const clone = res.clone();
+          caches.open(CACHE).then(c => c.put(e.request, clone));
         }
         return res;
       });

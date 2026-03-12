@@ -41,6 +41,58 @@ export function efficientEditDistance(a, b, maxHunkSize = 10000) {
     }
     return total;
 }
+/**
+ * 스냅샷 배열(오래된 순)을 순회하며 손실된 텍스트 hunk 목록을 반환한다.
+ * - 현재 내용에 남아있는 텍스트는 제외 (재추가된 것)
+ * - 동일한 삭제 내용은 한 번만 포함 (dedup)
+ */
+export function getLostHunks(snapshots, currentContent) {
+    if (snapshots.length < 2)
+        return [];
+    const seen = new Set();
+    const hunks = [];
+    for (let i = 0; i < snapshots.length - 1; i++) {
+        const prev = snapshots[i].content;
+        const curr = snapshots[i + 1].content;
+        const diff = diffChars(prev, curr);
+        let pos = 0;
+        for (const chunk of diff) {
+            if (chunk.removed) {
+                const text = chunk.value;
+                const key = text.trim();
+                if (key && !seen.has(key) && !currentContent.includes(key)) {
+                    seen.add(key);
+                    // 삭제 시작/끝 위치를 기준으로 컨텍스트 줄을 구한다
+                    const lines = prev.split('\n');
+                    let charCount = 0;
+                    let startLine = 0;
+                    let endLine = 0;
+                    const endPos = pos + text.length - 1;
+                    for (let l = 0; l < lines.length; l++) {
+                        const lineEnd = charCount + lines[l].length;
+                        if (startLine === 0 && pos <= lineEnd)
+                            startLine = l;
+                        if (endPos <= lineEnd) {
+                            endLine = l;
+                            break;
+                        }
+                        charCount += lines[l].length + 1;
+                    }
+                    hunks.push({
+                        before: startLine > 0 ? lines[startLine - 1] : '',
+                        deleted: text,
+                        after: endLine < lines.length - 1 ? lines[endLine + 1] : '',
+                    });
+                }
+                pos += text.length;
+            }
+            else if (!chunk.added) {
+                pos += chunk.value.length;
+            }
+        }
+    }
+    return hunks;
+}
 // ---------------------------------------------------------------------------
 // 화면 표시용 문자 단위 diff
 // ---------------------------------------------------------------------------

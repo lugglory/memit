@@ -9,7 +9,7 @@
 import './style.css';
 import { MemitDocument } from './lib/document';
 import { checkAmendSafe } from './lib/amendCheck';
-import { getCharacterDiff } from './lib/diffEngine';
+import { getCharacterDiff, getLostHunks } from './lib/diffEngine';
 // ---------------------------------------------------------------------------
 // 상태
 // ---------------------------------------------------------------------------
@@ -17,7 +17,7 @@ let doc = null;
 let snapshots = [];
 let visibleSnapshots = [];
 let selectedRow = -1;
-let filterDeleteOnly = false;
+let filterDeleteOnly = true;
 let lastSavedContent = '';
 let modified = false;
 // ---------------------------------------------------------------------------
@@ -43,6 +43,10 @@ const restoreBtn = el('restore-btn');
 const filterDelBtn = el('filter-del-btn');
 const prevSnapBtn = el('prev-snap-btn');
 const nextSnapBtn = el('next-snap-btn');
+const lostViewBtn = el('lost-view-btn');
+const historyView = el('history-view');
+const lostTextView = el('lost-text-view');
+const panelTitle = el('history-panel-title');
 const ctxMenu = el('ctx-menu');
 const ctxEdit = el('ctx-edit');
 // ---------------------------------------------------------------------------
@@ -81,6 +85,7 @@ function loadCurrentPage() {
     _preChangeContent = content;
     modified = false;
     renderPageBar();
+    updateFilterBtn();
     refreshHistory();
     updateStatus();
 }
@@ -200,7 +205,7 @@ function hidePageCtxMenu() { pageCtxMenu.style.display = 'none'; }
 // ---------------------------------------------------------------------------
 // 편집 감지 — 버퍼 + 트리거 기반 자동 커밋
 // ---------------------------------------------------------------------------
-const POST_DELETION_DELAY = 1500;
+const POST_DELETION_DELAY = 500;
 let _preChangeContent = '';
 let _inDeletionSeq = false;
 let _postDeletionTimer = null;
@@ -220,26 +225,28 @@ function cancelPostDeletionCommit() {
         _postDeletionTimer = null;
     }
 }
-function isCompletionChar(current, prev) {
-    if (current.length <= prev.length)
-        return false;
-    const last = current[current.length - 1];
-    const second = current.length >= 2 ? current[current.length - 2] : '';
-    if (last === '\n' && second !== '\n')
-        return true;
-    if ('.!?。'.includes(last) && last !== second)
-        return true;
-    return false;
-}
-editor.addEventListener('input', () => {
+editor.addEventListener('input', (e) => {
     const current = editor.value;
     const prev = _preChangeContent;
+    const inputType = e.inputType ?? '';
+    const composing = e.isComposing ?? false;
+    // 조합 중(IME / iOS 자동교정)이면 modified만 갱신하고 종료
+    if (composing) {
+        if (current !== lastSavedContent) {
+            modified = true;
+            updateStatus();
+        }
+        return;
+    }
     _preChangeContent = current;
     if (current !== lastSavedContent) {
         modified = true;
         updateStatus();
     }
-    if (current.length < prev.length) {
+    // inputType 우선 판단, 없으면 길이 비교로 폴백
+    const isDelete = inputType.startsWith('delete') || current.length < prev.length;
+    if (isDelete) {
+        // 삭제 감지: 직전 상태를 즉시 커밋 (삭제 전 내용 보존)
         if (!_inDeletionSeq) {
             _inDeletionSeq = true;
             if (prev !== lastSavedContent)
@@ -248,10 +255,11 @@ editor.addEventListener('input', () => {
         schedulePostDeletionCommit();
     }
     else {
-        _inDeletionSeq = false;
-        cancelPostDeletionCommit();
-        if (isCompletionChar(current, prev))
-            saveAndCommit(undefined, true);
+        // 삽입/변경: iOS 자동교정이 삭제 중간에 삽입할 수 있으므로
+        // 삭제 시퀀스 중이 아닐 때만 타이머를 취소한다.
+        if (!_inDeletionSeq) {
+            cancelPostDeletionCommit();
+        }
     }
 });
 // ---------------------------------------------------------------------------
@@ -289,11 +297,70 @@ function navigateHistory(dir) {
         : Math.max(0, Math.min(visibleSnapshots.length - 1, selectedRow + dir));
     selectRow(next);
 }
+function updateFilterBtn() {
+    filterDelBtn.classList.toggle('active', filterDeleteOnly);
+    filterDelBtn.textContent = filterDeleteOnly ? '모두' : '삭제만';
+}
 filterDelBtn.addEventListener('click', () => {
     filterDeleteOnly = !filterDeleteOnly;
-    filterDelBtn.classList.toggle('active', filterDeleteOnly);
+    updateFilterBtn();
     refreshHistory();
 });
+// ---------------------------------------------------------------------------
+// 손실 텍스트 뷰
+// ---------------------------------------------------------------------------
+let _lostViewActive = false;
+lostViewBtn.addEventListener('click', () => {
+    _lostViewActive = !_lostViewActive;
+    lostViewBtn.classList.toggle('active', _lostViewActive);
+    if (_lostViewActive) {
+        historyView.style.display = 'none';
+        lostTextView.style.display = 'flex';
+        panelTitle.textContent = 'LOST TEXT';
+        renderLostView();
+    }
+    else {
+        historyView.style.display = 'flex';
+        lostTextView.style.display = 'none';
+        panelTitle.textContent = 'HISTORY';
+    }
+});
+function renderLostView() {
+    if (!doc)
+        return;
+    lostTextView.innerHTML = '';
+    const allSnaps = doc.getSnapshots(); // 오래된 순
+    const current = doc.getContent();
+    const hunks = getLostHunks(allSnaps, current);
+    if (hunks.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'lost-empty';
+        empty.textContent = '손실된 텍스트 없음';
+        lostTextView.appendChild(empty);
+        return;
+    }
+    for (const { before, deleted, after } of hunks) {
+        const hunk = document.createElement('div');
+        hunk.className = 'lost-hunk';
+        if (before) {
+            const bLine = document.createElement('div');
+            bLine.className = 'lost-ctx';
+            bLine.textContent = before;
+            hunk.appendChild(bLine);
+        }
+        const dLine = document.createElement('div');
+        dLine.className = 'lost-del';
+        dLine.textContent = deleted;
+        hunk.appendChild(dLine);
+        if (after) {
+            const aLine = document.createElement('div');
+            aLine.className = 'lost-ctx';
+            aLine.textContent = after;
+            hunk.appendChild(aLine);
+        }
+        lostTextView.appendChild(hunk);
+    }
+}
 prevSnapBtn.addEventListener('click', () => navigateHistory(-1));
 nextSnapBtn.addEventListener('click', () => navigateHistory(1));
 saveBtn.addEventListener('click', () => saveAndCommit());
@@ -304,8 +371,8 @@ saveFileBtn.addEventListener('click', () => saveToFile());
 async function saveAndCommit(contentOverride, silent = false) {
     if (!doc)
         return;
-    cancelPostDeletionCommit();
     const newContent = contentOverride ?? editor.value;
+    cancelPostDeletionCommit();
     let message;
     if (!silent && customMsgChk.checked) {
         const msg = await promptDialog('커밋 메시지를 입력하세요:', '');
