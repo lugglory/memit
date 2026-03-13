@@ -33,9 +33,7 @@ function el<T extends HTMLElement>(id: string): T {
 const statusBar   = el('status-bar');
 const pageBar     = el('page-bar');
 const editor      = el<HTMLTextAreaElement>('editor');
-const saveBtn     = el<HTMLButtonElement>('save-btn');
 const saveFileBtn = el<HTMLButtonElement>('save-file-btn');
-const customMsgChk = el<HTMLInputElement>('custom-msg');
 const exportBtn   = el<HTMLButtonElement>('export-btn');
 const copyBtn     = el<HTMLButtonElement>('copy-btn');
 const lostTextView = el<HTMLDivElement>('lost-text-view');
@@ -271,7 +269,6 @@ document.addEventListener('keydown', e => {
 document.addEventListener('click',   () => hidePageCtxMenu());
 document.addEventListener('keydown', e => { if (e.key === 'Escape') hidePageCtxMenu(); });
 
-saveBtn.addEventListener('click',     () => saveAndCommit());
 saveFileBtn.addEventListener('click', () => saveToFile());
 
 // ---------------------------------------------------------------------------
@@ -284,14 +281,7 @@ async function saveAndCommit(contentOverride?: string, silent = false) {
 
   cancelPostDeletionCommit();
 
-  let message: string;
-  if (!silent && customMsgChk.checked) {
-    const msg = await promptDialog('커밋 메시지를 입력하세요:', '');
-    if (msg === null) return;
-    message = msg.trim() || String(doc.getSnapshots().length + 1);
-  } else {
-    message = autoMessage(newContent);
-  }
+  const message = autoMessage(newContent);
 
   try {
     const [success, resultMsg] = await doc.commit(newContent, message);
@@ -327,13 +317,28 @@ async function saveToFile() {
 }
 
 // ---------------------------------------------------------------------------
-// 탭/창 닫기 전 경고
+// ---------------------------------------------------------------------------
+// 30초 자동 커밋
 // ---------------------------------------------------------------------------
 
+setInterval(() => {
+  if (modified) saveAndCommit(undefined, true);
+}, 30_000);
+
+// ---------------------------------------------------------------------------
+// 탭 숨김 시 커밋 (visibilitychange) + 닫기 전 경고 (beforeunload)
+// ---------------------------------------------------------------------------
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden' && modified) {
+    saveAndCommit(undefined, true);
+  }
+});
+
 window.addEventListener('beforeunload', e => {
-  if (doc?.dirtyToFile) {
+  if (modified || doc?.dirtyToFile) {
     e.preventDefault();
-    e.returnValue = '파일에 저장되지 않은 변경사항이 있습니다. 닫으시겠습니까?';
+    e.returnValue = '저장되지 않은 변경사항이 있습니다. 닫으시겠습니까?';
   }
 });
 
