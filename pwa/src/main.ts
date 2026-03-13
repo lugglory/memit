@@ -566,8 +566,15 @@ dragHandle.addEventListener('mousedown', e => {
 // PWA 서비스 워커 등록
 // ---------------------------------------------------------------------------
 
-if ('serviceWorker' in navigator && import.meta.env.PROD) {
-  navigator.serviceWorker.register('./sw.js');
+if ('serviceWorker' in navigator) {
+  if (import.meta.env.PROD) {
+    navigator.serviceWorker.register('./sw.js');
+  } else {
+    navigator.serviceWorker.getRegistrations().then(regs => {
+      for (const r of regs) r.unregister();
+    });
+    caches.keys().then(keys => keys.forEach(k => caches.delete(k)));
+  }
 }
 
 // ---------------------------------------------------------------------------

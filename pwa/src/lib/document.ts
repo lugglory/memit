@@ -306,7 +306,7 @@ export class MemitDocument {
         types: [{ description: 'Memit 파일', accept: { 'application/json': ['.memit'] } }],
       });
     }
-    const writable = await this.handle.createWritable();
+    const writable = await this.handle!.createWritable();
     await writable.write(JSON.stringify(this.serialize(), null, 2));
     await writable.close();
     // handle 정보를 IDB에도 갱신
