@@ -231,6 +231,31 @@ label input[type="checkbox"] { accent-color: var(--accent); width: 14px; height:
 
 
 /* ─── Lost-text view ─── */
+#lost-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+#lost-controls label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: #888;
+  cursor: pointer;
+  user-select: none;
+}
+
+#lost-controls #clear-lost-btn {
+  margin-left: auto;
+  font-size: 11px;
+  padding: 2px 8px;
+}
+
 #lost-text-view {
   flex: 1;
   min-height: 0;
@@ -264,7 +289,14 @@ label input[type="checkbox"] { accent-color: var(--accent); width: 14px; height:
   background: #3d1a1a;
   white-space: pre-wrap;
   word-break: break-all;
-  text-decoration: line-through;
+}
+
+.lost-hunk.removable {
+  cursor: pointer;
+}
+
+.lost-hunk.removable:hover {
+  opacity: 0.6;
 }
 
 .lost-empty {

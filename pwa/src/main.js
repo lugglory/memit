@@ -28,12 +28,12 @@ function el(id) {
 const statusBar = el('status-bar');
 const pageBar = el('page-bar');
 const editor = el('editor');
-const saveBtn = el('save-btn');
 const saveFileBtn = el('save-file-btn');
-const customMsgChk = el('custom-msg');
 const exportBtn = el('export-btn');
 const copyBtn = el('copy-btn');
 const lostTextView = el('lost-text-view');
+const removableChk = el('removable-chk');
+const clearLostBtn = el('clear-lost-btn');
 // ---------------------------------------------------------------------------
 // 파일 열기 / 만들기
 // ---------------------------------------------------------------------------
@@ -259,8 +259,22 @@ document.addEventListener('keydown', e => {
 document.addEventListener('click', () => hidePageCtxMenu());
 document.addEventListener('keydown', e => { if (e.key === 'Escape')
     hidePageCtxMenu(); });
-saveBtn.addEventListener('click', () => saveAndCommit());
 saveFileBtn.addEventListener('click', () => saveToFile());
+removableChk.addEventListener('change', () => renderLostView());
+clearLostBtn.addEventListener('click', async () => {
+    if (!doc)
+        return;
+    const currentContent = doc.getContent();
+    const accumulated = doc.getAccumulatedLostHunks();
+    const live = getLostHunks(doc.getSnapshots(), currentContent);
+    const dismissed = new Set(doc.getDismissedKeys());
+    const seen = new Set();
+    const keys = [...accumulated, ...live]
+        .map(h => h.deleted.trim())
+        .filter(k => k && !seen.has(k) && !currentContent.includes(k) && !dismissed.has(k) && seen.add(k));
+    await doc.clearAllLostHunks(keys);
+    renderLostView();
+});
 // ---------------------------------------------------------------------------
 // 커밋 → IndexedDB
 // ---------------------------------------------------------------------------
@@ -269,16 +283,7 @@ async function saveAndCommit(contentOverride, silent = false) {
         return;
     const newContent = contentOverride ?? editor.value;
     cancelPostDeletionCommit();
-    let message;
-    if (!silent && customMsgChk.checked) {
-        const msg = await promptDialog('커밋 메시지를 입력하세요:', '');
-        if (msg === null)
-            return;
-        message = msg.trim() || String(doc.getSnapshots().length + 1);
-    }
-    else {
-        message = autoMessage(newContent);
-    }
+    const message = autoMessage(newContent);
     try {
         const [success, resultMsg] = await doc.commit(newContent, message);
         if (success) {
@@ -317,12 +322,25 @@ async function saveToFile() {
     }
 }
 // ---------------------------------------------------------------------------
-// 탭/창 닫기 전 경고
 // ---------------------------------------------------------------------------
+// 30초 자동 커밋
+// ---------------------------------------------------------------------------
+setInterval(() => {
+    if (modified)
+        saveAndCommit(undefined, true);
+}, 30_000);
+// ---------------------------------------------------------------------------
+// 탭 숨김 시 커밋 (visibilitychange) + 닫기 전 경고 (beforeunload)
+// ---------------------------------------------------------------------------
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && modified) {
+        saveAndCommit(undefined, true);
+    }
+});
 window.addEventListener('beforeunload', e => {
-    if (doc?.dirtyToFile) {
+    if (modified || doc?.dirtyToFile) {
         e.preventDefault();
-        e.returnValue = '파일에 저장되지 않은 변경사항이 있습니다. 닫으시겠습니까?';
+        e.returnValue = '저장되지 않은 변경사항이 있습니다. 닫으시겠습니까?';
     }
 });
 // ---------------------------------------------------------------------------
@@ -385,11 +403,12 @@ function renderLostView() {
     const currentContent = doc.getContent();
     const accumulated = doc.getAccumulatedLostHunks();
     const live = getLostHunks(doc.getSnapshots(), currentContent);
-    // 누적분(오래된 순) + live 합산, dedup + 현재 내용 필터
+    const dismissed = new Set(doc.getDismissedKeys());
+    // 누적분(오래된 순) + live 합산, dedup + 현재 내용 필터 + dismissed 필터
     const seen = new Set();
     const hunks = [...accumulated, ...live].filter(h => {
         const key = h.deleted.trim();
-        if (!key || seen.has(key) || currentContent.includes(key))
+        if (!key || seen.has(key) || currentContent.includes(key) || dismissed.has(key))
             return false;
         seen.add(key);
         return true;
@@ -401,9 +420,16 @@ function renderLostView() {
         lostTextView.appendChild(empty);
         return;
     }
+    const removable = removableChk.checked;
     for (const { before, deleted, after } of hunks) {
+        const key = deleted.trim();
         const hunk = document.createElement('div');
-        hunk.className = 'lost-hunk';
+        hunk.className = removable ? 'lost-hunk removable' : 'lost-hunk';
+        if (removable) {
+            hunk.addEventListener('click', () => {
+                doc.dismissLostHunk(key).then(() => renderLostView());
+            });
+        }
         if (before) {
             const bLine = document.createElement('div');
             bLine.className = 'lost-ctx';

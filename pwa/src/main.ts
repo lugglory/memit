@@ -36,7 +36,9 @@ const editor      = el<HTMLTextAreaElement>('editor');
 const saveFileBtn = el<HTMLButtonElement>('save-file-btn');
 const exportBtn   = el<HTMLButtonElement>('export-btn');
 const copyBtn     = el<HTMLButtonElement>('copy-btn');
-const lostTextView = el<HTMLDivElement>('lost-text-view');
+const lostTextView   = el<HTMLDivElement>('lost-text-view');
+const removableChk   = el<HTMLInputElement>('removable-chk');
+const clearLostBtn   = el<HTMLButtonElement>('clear-lost-btn');
 
 // ---------------------------------------------------------------------------
 // 파일 열기 / 만들기
@@ -271,6 +273,22 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') hidePageCtxM
 
 saveFileBtn.addEventListener('click', () => saveToFile());
 
+removableChk.addEventListener('change', () => renderLostView());
+
+clearLostBtn.addEventListener('click', async () => {
+  if (!doc) return;
+  const currentContent = doc.getContent();
+  const accumulated    = doc.getAccumulatedLostHunks();
+  const live           = getLostHunks(doc.getSnapshots(), currentContent);
+  const dismissed      = new Set(doc.getDismissedKeys());
+  const seen           = new Set<string>();
+  const keys = [...accumulated, ...live]
+    .map(h => h.deleted.trim())
+    .filter(k => k && !seen.has(k) && !currentContent.includes(k) && !dismissed.has(k) && seen.add(k));
+  await doc.clearAllLostHunks(keys);
+  renderLostView();
+});
+
 // ---------------------------------------------------------------------------
 // 커밋 → IndexedDB
 // ---------------------------------------------------------------------------
@@ -407,12 +425,13 @@ function renderLostView() {
   const currentContent = doc.getContent();
   const accumulated    = doc.getAccumulatedLostHunks();
   const live           = getLostHunks(doc.getSnapshots(), currentContent);
+  const dismissed      = new Set(doc.getDismissedKeys());
 
-  // 누적분(오래된 순) + live 합산, dedup + 현재 내용 필터
+  // 누적분(오래된 순) + live 합산, dedup + 현재 내용 필터 + dismissed 필터
   const seen = new Set<string>();
   const hunks = [...accumulated, ...live].filter(h => {
     const key = h.deleted.trim();
-    if (!key || seen.has(key) || currentContent.includes(key)) return false;
+    if (!key || seen.has(key) || currentContent.includes(key) || dismissed.has(key)) return false;
     seen.add(key);
     return true;
   });
@@ -425,9 +444,18 @@ function renderLostView() {
     return;
   }
 
+  const removable = removableChk.checked;
+
   for (const { before, deleted, after } of hunks) {
+    const key  = deleted.trim();
     const hunk = document.createElement('div');
-    hunk.className = 'lost-hunk';
+    hunk.className = removable ? 'lost-hunk removable' : 'lost-hunk';
+
+    if (removable) {
+      hunk.addEventListener('click', () => {
+        doc!.dismissLostHunk(key).then(() => renderLostView());
+      });
+    }
 
     if (before) {
       const bLine = document.createElement('div');

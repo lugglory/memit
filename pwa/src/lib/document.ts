@@ -34,7 +34,8 @@ export interface MemitPage {
   title: string;
   nextId: number;
   snapshots: MemitSnapshot[];
-  lostHunks: LostHunk[];   // pruning으로 버려진 스냅샷에서 누적된 손실 텍스트
+  lostHunks: LostHunk[];        // pruning으로 버려진 스냅샷에서 누적된 손실 텍스트
+  dismissedKeys: string[];      // 사용자가 직접 제거한 손실 hunk 키
 }
 
 interface SerializedSnapshot {
@@ -53,6 +54,7 @@ interface SerializedPage {
   next_id: number;
   snapshots: SerializedSnapshot[];
   lost_hunks?: Array<{ before: string; deleted: string; after: string }>;
+  dismissed_keys?: string[];
 }
 
 export interface SerializedDoc {
@@ -119,6 +121,7 @@ export class MemitDocument {
       nextId: 1,
       snapshots: [],
       lostHunks: [],
+      dismissedKeys: [],
     };
     this.pages.push(page);
     return page;
@@ -140,6 +143,29 @@ export class MemitDocument {
   /** 현재 페이지의 누적 손실 hunk 반환 (raw, 현재 내용 필터 미적용) */
   getAccumulatedLostHunks(): LostHunk[] {
     return this.getCurrentPage().lostHunks;
+  }
+
+  /** 현재 페이지의 dismissed 키 목록 반환 */
+  getDismissedKeys(): string[] {
+    return this.getCurrentPage().dismissedKeys;
+  }
+
+  /** 특정 손실 hunk를 제거(dismiss) 후 DB 저장 */
+  async dismissLostHunk(key: string): Promise<void> {
+    const page = this.getCurrentPage();
+    if (!page.dismissedKeys.includes(key)) page.dismissedKeys.push(key);
+    page.lostHunks = page.lostHunks.filter(h => h.deleted.trim() !== key);
+    await this.saveToDb();
+  }
+
+  /** 현재 페이지의 모든 손실 hunk를 dismiss 후 DB 저장 */
+  async clearAllLostHunks(keys: string[]): Promise<void> {
+    const page = this.getCurrentPage();
+    for (const key of keys) {
+      if (!page.dismissedKeys.includes(key)) page.dismissedKeys.push(key);
+    }
+    page.lostHunks = [];
+    await this.saveToDb();
   }
 
   /** 페이지를 삭제한다. 마지막 페이지는 삭제 불가. */
@@ -184,6 +210,7 @@ export class MemitDocument {
         title: p.title,
         next_id: p.nextId,
         lost_hunks: p.lostHunks,
+        dismissed_keys: p.dismissedKeys,
         snapshots: p.snapshots.map(s => ({
           id:          s.id,
           message:     s.message,
@@ -205,6 +232,7 @@ export class MemitDocument {
         title:     'Page 1',
         nextId:    v1.next_id ?? 1,
         lostHunks: [],
+        dismissedKeys: [],
         snapshots: (v1.snapshots ?? []).map(s => ({
           id:         s.id,
           message:    s.message,
@@ -225,6 +253,7 @@ export class MemitDocument {
       title:     p.title,
       nextId:    p.next_id ?? 1,
       lostHunks: (p.lost_hunks ?? []).map(h => ({ before: h.before, deleted: h.deleted, after: h.after })),
+      dismissedKeys: p.dismissed_keys ?? [],
       snapshots: (p.snapshots ?? []).map(s => ({
         id:         s.id,
         message:    s.message,
